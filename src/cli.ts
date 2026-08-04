@@ -60,13 +60,18 @@ program.hook("preAction", (_thisCommand, actionCommand) => {
     const parentName = actionCommand.parent?.name();
     if (parentName === "telemetry" || parentName === "config") return;
 
+    // Resolve the project root once and hand it to telemetry, so the dev-repo
+    // guard answers for THIS project rather than process.cwd().
     let scaffoldId: string | undefined;
+    let projectRoot: string | undefined;
     try {
-      scaffoldId = readScaffoldId(findConfig().scaffoldRoot);
+      const config = findConfig();
+      projectRoot = config.projectRoot;
+      scaffoldId = readScaffoldId(config.scaffoldRoot);
     } catch {
-      // No scaffold (or not in one) — omit scaffold_id.
+      // No scaffold (or not in one) — omit scaffold_id and fall back to cwd.
     }
-    captureCommand(actionCommand.name(), scaffoldId);
+    captureCommand(actionCommand.name(), scaffoldId, projectRoot);
   } catch {
     // Telemetry must never affect command behaviour.
   }

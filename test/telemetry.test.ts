@@ -284,6 +284,57 @@ describe("dev-repo guard (AC7)", () => {
     const { isDevRepo } = await import("../src/global-config.js");
     expect(isDevRepo()).toBe(false);
   });
+
+  // An explicitly-passed root must win over process.cwd(). This is what makes
+  // the guard correct in a long-lived stdio MCP server, whose cwd is wherever
+  // the harness was launched rather than the project being queried.
+  it("answers for an explicitly-passed root, not cwd", async () => {
+    const devRepo = mkdtempSync(join(tmpdir(), "mex-dev-explicit-"));
+    const plainRepo = mkdtempSync(join(tmpdir(), "mex-plain-explicit-"));
+    try {
+      writeFileSync(join(devRepo, "package.json"), JSON.stringify({ name: "mex-agent" }));
+      mkdirSync(join(devRepo, "src"), { recursive: true });
+      writeFileSync(join(devRepo, "src", "cli.ts"), "");
+      writeFileSync(join(plainRepo, "package.json"), JSON.stringify({ name: "some-user-app" }));
+
+      // Deferred import, matching this file's convention: these modules read
+      // env vars at call time, so the import must land after the per-test env
+      // and cwd setup above.
+      const { isDevRepo } = await import("../src/global-config.js");
+
+      // cwd is the NON-dev project; the dev repo is only named explicitly.
+      process.chdir(plainRepo);
+      expect(isDevRepo(devRepo)).toBe(true);
+      expect(isDevRepo()).toBe(false);
+
+      // And the reverse: cwd is the dev repo, the argument is not.
+      process.chdir(devRepo);
+      expect(isDevRepo(plainRepo)).toBe(false);
+      expect(isDevRepo()).toBe(true);
+    } finally {
+      restoreCwd();
+      rmSync(devRepo, { recursive: true, force: true });
+      rmSync(plainRepo, { recursive: true, force: true });
+    }
+  });
+
+  it("isEnabled forwards its projectRoot to the dev-repo guard", async () => {
+    const devRepo = mkdtempSync(join(tmpdir(), "mex-enabled-root-"));
+    try {
+      writeFileSync(join(devRepo, "package.json"), JSON.stringify({ name: "mex-agent" }));
+      mkdirSync(join(devRepo, "src"), { recursive: true });
+      writeFileSync(join(devRepo, "src", "cli.ts"), "");
+
+      exitDevRepo(); // cwd is a plain temp dir, so telemetry is otherwise enabled
+      const { isEnabled } = await import("../src/telemetry/index.js");
+
+      expect(isEnabled().enabled).toBe(true);
+      expect(isEnabled(devRepo)).toEqual({ enabled: false, reason: "dev" });
+    } finally {
+      restoreCwd();
+      rmSync(devRepo, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── AC8: config set round-trip ──
