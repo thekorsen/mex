@@ -385,7 +385,7 @@ function discoverSourceFiles(root: string): DiscoveredFile[] {
   return files;
 }
 
-function sha256(text: string): string {
+export function sha256(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
