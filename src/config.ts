@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname, isAbsolute, basename } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { MexConfig, AiTool, StalenessThresholds, WatchConfig, HeartbeatConfig, ScaffoldIdentity } from "./types.js";
+import { AI_TOOLS } from "./types.js";
 import { DEFAULT_STALENESS_THRESHOLDS } from "./drift/checkers/staleness.js";
 
 /**
@@ -117,12 +118,12 @@ interface MexPersistedConfig {
   [key: string]: unknown;
 }
 
-const VALID_AI_TOOLS = new Set<string>(["claude", "cursor", "windsurf", "copilot", "opencode", "codex"]);
-
 function loadAiTools(raw: MexPersistedConfig | null): AiTool[] {
   const arr = raw?.aiTools;
   if (!Array.isArray(arr)) return [];
-  return arr.filter((v): v is AiTool => typeof v === "string" && VALID_AI_TOOLS.has(v));
+  // Validated against AI_TOOLS itself, so adding a tool to the union cannot
+  // silently fail to persist — an unlisted tool is dropped on every reload.
+  return arr.filter((v): v is AiTool => typeof v === "string" && v in AI_TOOLS);
 }
 
 function loadStalenessThresholds(scaffoldRoot: string, raw: MexPersistedConfig | null): StalenessThresholds | undefined {
