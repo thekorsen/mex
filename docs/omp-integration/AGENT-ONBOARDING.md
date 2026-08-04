@@ -167,13 +167,27 @@ Every line below was run in this working tree. Reproduce before doubting.
 
 ### 4.3 Explicitly NOT verified — verify before relying on
 
-- ~~**[INFERENCE]** Whether `simple-git`'s default `log()` includes merge commits.~~ **RESOLVED by issue #9 — promoted to §4.1.**
-- **[INFERENCE]** Whether the dangling `.mex/sync.sh` references are pre-npm residue or an intentional legacy path (issue #19).
-- **[INFERENCE]** Whether gitignoring `graph.db` is upstream policy or this repo's choice. `COMPATIBILITY.md:156-159` calls it "generated … internal mex data", consistent with ignoring, but no team policy is stated (issue #5).
-- **Doc conflict in the harness:** `omp://marketplace.md` states marketplace installs load `omp.extensions` via symlink + `omp-plugins.lock.json`; other omp docs are less explicit. Verify empirically before depending on marketplace distribution (issue #16).
+- ~~**[INFERENCE]** Whether `simple-git`'s default `log()` includes merge commits.~~ **RESOLVED by issue #9 — it DOES** (24/24 merge shas present; `all.length` == `git rev-list --count HEAD`). Merge handling is now explicit and mutation-tested in both directions.
+- ~~**[INFERENCE]** Whether the dangling `.mex/sync.sh` references are pre-npm residue or an intentional legacy path.~~ **RESOLVED by issue #19 — pre-npm residue.** `247ff33` moved the root scaffold into `.mex/` while `setup.sh` was still a real sibling; `09e12ef` then copied `.mex/SETUP.md` verbatim into `templates/` **and** set `package.json#files` with no `*.sh`, in the same commit. `git log -S 'sync.sh' -- templates/` returns exactly `09e12ef`.
+- ~~`origin` / `upstream` in `ScaffoldIdentity` are loaded and persisted but no writer sets them.~~ **RESOLVED by issue #18 — they were dead code and have been removed.** Confirmed by `git log -S`, greps across `src/ packages/ test/ templates/`, and a zero-hit grep on `COMPATIBILITY.md`.
+- **[INFERENCE]** Whether gitignoring `graph.db` is upstream policy or this repo's choice. `COMPATIBILITY.md:156-159` calls it "generated … internal mex data", consistent with ignoring, but no team policy is stated (issue #5, **open** — the baselines lane must settle this).
+- **Doc conflict in the harness:** `omp://marketplace.md` states marketplace installs load `omp.extensions` via symlink + `omp-plugins.lock.json`; other omp docs are less explicit. Verify empirically before depending on marketplace distribution (issue #16, **open**).
 - `evaluate/` and `visualize.sh` (55 KB, embedded Python viewer on port 4444) were not read.
 - Whether `mex init`'s five sub-scanners behave as the orchestrator implies — only `src/scanner/index.ts` was read.
-- `origin` / `upstream` in `ScaffoldIdentity` (`src/types.ts:58-61`) are loaded and persisted but **no writer ever sets them non-null**. Purpose unknown (issue #18).
+
+#### Newly verified by execution during wave 1 (treat as §4.1)
+
+- **A missing `@` import is silent.** omp leaves the literal token in context with no warning (`omp://context-files.md:147-154`). This is why `OMP_ANCHOR_BROKEN` exists as a checker.
+- **The bridge form matters:** `@../.mex/AGENTS.md` from `.omp/AGENTS.md` resolves; `@.mex/AGENTS.md` **fails silently**. Ticket #17's original text had the wrong form.
+- **The active rule snapshot is installed once per session** (`omp://rulebook-matching-pipeline.md:271-275`), so no checker or live process can refresh an in-flight session's rulebook.
+- **`alwaysApply` + `description` together silently exclude a rule** from the rulebook (`:198-202`) — a trap for anyone generating rules.
+- **`$ARGUMENTS` is substituted textually**, so a task containing a quote or backtick can break a command template or inject into a shell line. Caught only by a live omp run.
+- **`npm run build` does NOT typecheck.** `tsup` strips types without checking them; only `npm run typecheck` (`tsc --noEmit`) catches a dropped import. A non-compiling `src/watch.ts` passed build and the full vitest suite during wave 1. CI now runs typecheck across all workspaces with `--if-present`.
+- **`mex check` does not exercise graph change detection on this repo.** `runDriftCheck` loads the grounding runtime only when a scaffold file carries `grounds_to` frontmatter or an inline `mex://` anchor (`src/drift/index.ts:71-78`); this repo's `.mex/` has neither. Timing `check` to measure `src/graph/runtime.ts` yields a false null — drive `loadGroundingRuntime` directly.
+- **`mex-mcp` can reach `mex-agent` only through `dist/index.js`** (exports map + tsup outputs), and the npm workspace self-link `node_modules/mex-agent` must exist. This forced the #10 public-API decision.
+- **Retrieval functions default `write` to `console.log`, but stdout is the MCP JSON-RPC channel** — every MCP tool must pass a capturing `write` or it corrupts the protocol stream.
+- **Corruption can *raise* the drift score** (90 with a real `DEAD_EDGE` → 100 with a duplicate YAML key), and a **clean** merge (exit 0, no markers) can produce it. Reproduced independently twice.
+- **git never fires per-worktree hooks** for the operations mex cares about; the shared common-dir hook is the only one that runs. Verified by instrumented sentinel, not inferred.
 
 ---
 
@@ -223,37 +237,39 @@ The canary-token technique is the reliable way to test context injection: put a 
 
 ## 6. Issue map
 
-| # | Title | Milestone | Notes |
+**16 of 19 closed by the wave-1 fleet** (merged to `main` as `0379c24`). Three remain open, all wave 2.
+
+| # | Title | Milestone | State |
 |---|---|---|---|
-| 1 | omp never loads the root `CLAUDE.md` anchor | Tier 1 | **blocker** · design decision first |
-| 2 | Add `.omp` as a tool target in `mex setup` | Tier 1 | good first slice · gated on #1's shape |
-| 3 | Graph commands fail from any subdirectory | Correctness | good first slice · clean repro |
-| 4 | `mex watch` ENOTDIR in a worktree | Correctness | design decision: shared vs per-worktree hook |
-| 5 | Fresh clone has anchors but no baselines | Multi-dev | **blocker** · the silent failure |
-| 6 | mtime change detection vs existing `content_hash` | Multi-dev | good first slice · unblocks #5 |
-| 7 | No CI path; sync needs a TTY | Multi-dev | **blocker** for team use |
-| 8 | No reconciliation model for concurrent edits | Multi-dev | design proposal, not code |
-| 9 | Staleness has no upstream awareness | Multi-dev | |
-| 10 | Graph retrieval over MCP | Tier 1 | highest agent value · public-API decision |
-| 11 | `mex-mcp` process-global state leaks | Correctness | do before/with #10 |
-| 12 | mex never writes a `.gitignore` rule | Correctness | good first slice |
-| 13 | Map `ROUTER.md` onto omp's rulebook | Tier 1 | design decision: static vs live projection |
-| 14 | Teach `mex sync` to drive omp | Tier 1 | risk: brief size vs `ARG_MAX` |
-| 15 | Ship a mex skill + slash commands | Tier 1 | good first slice · already proven to work |
-| 16 | The omp extension module | Tier 2 | **do not start before Tier 1** |
-| 17 | Document + test Tier 0 | Tier 0 | good first slice · start here |
-| 18 | Two checkouts share one `scaffold_id` | Correctness | identity model |
-| 19 | Shipped `SETUP.md` references non-existent scripts | Correctness | good first slice · wastes every agent's turn |
+| 1 | omp never loads the root `CLAUDE.md` anchor | Tier 1 | **closed** — thin `.omp/AGENTS.md` bridge, `@../.mex/AGENTS.md` |
+| 2 | Add `.omp` as a tool target in `mex setup` | Tier 1 | **closed** — `AI_TOOLS.omp`; also killed a duplicate whitelist in `src/config.ts` |
+| 3 | Graph commands fail from any subdirectory | Correctness | **closed** — `resolveGraphRoot`; also fixed a dead `--root` flag |
+| 4 | `mex watch` ENOTDIR in a worktree | Correctness | **closed** — `git rev-parse --git-path hooks`; shared hook is correct |
+| 5 | Fresh clone has anchors but no baselines | Multi-dev | **OPEN** — wave 2, lane `baselines`. The silent failure. |
+| 6 | mtime change detection vs existing `content_hash` | Multi-dev | **closed** — 13,996 ms → 65 ms; `graph.db` now portable |
+| 7 | No CI path; sync needs a TTY | Multi-dev | **closed** — drift gate, `counts` + `contractVersion`, exit 2 |
+| 8 | No reconciliation model for concurrent edits | Multi-dev | **closed** — design proposal in `docs/omp-integration/design/` |
+| 9 | Staleness has no upstream awareness | Multi-dev | **closed** — merge-base, no network; 29.4 → 4.0 ms/file |
+| 10 | Graph retrieval over MCP | Tier 1 | **closed** — 4 tools, promoted to public API, verified from omp |
+| 11 | `mex-mcp` process-global state leaks | Correctness | **closed** — keyed per root; `isDevRepo` threaded |
+| 12 | mex never writes a `.gitignore` rule | Correctness | **closed** — idempotent marker-append |
+| 13 | Map `ROUTER.md` onto omp's rulebook | Tier 1 | **closed** — static projection, pointer-only bodies |
+| 14 | Teach `mex sync` to drive omp | Tier 1 | **OPEN** — wave 2, lane `syncomp`. Risk: brief size vs `ARG_MAX`. |
+| 15 | Ship a mex skill + slash commands | Tier 1 | **closed** — verified live in omp 17.2.4 |
+| 16 | The omp extension module | Tier 2 | **OPEN** — wave 2, lane `ext`. Tier 1 prerequisites now landed. |
+| 17 | Document + test Tier 0 | Tier 0 | **closed** — and the ticket's own `@` form was wrong |
+| 18 | Two checkouts share one `scaffold_id` | Correctness | **closed** — per-checkout identity; dead fields removed |
+| 19 | Shipped `SETUP.md` references non-existent scripts | Correctness | **closed** — pre-npm residue, now test-defended |
 
-### Suggested order
+### Wave 2 — what is left and what it depends on
 
-**Start here if you want value fastest:** #17 (document what already works) → #3, #12, #19 (clean bounded bugs) → #2, #15 (native surfaces) → #1, #13 (the two design decisions that unblock everything else) → #10, #11, #14 → #6 → #5, #7 → #8, #9, #18 → #16.
+- **#5 (`baselines`)** is the one that matters most for a real team: grounded-symbol body drift is
+  undetectable on any clone but the authoring one, and it fails by reporting *clean*. #6 landed the
+  prerequisite — `graph.db` is now content-portable across checkouts.
+- **#14 (`syncomp`)** consumes `AI_TOOLS.omp` from #2 and must honor the non-TTY promise from #7.
+- **#16 (`ext`)** consumes the four MCP tools from #10 and the rulebook projection from #13.
 
-**Dependencies that actually bind:**
-- #2 needs #1's decision (anchor shape).
-- #16 needs #10 (or an equivalent programmatic retrieval path) and #13's decision.
-- #5's "shareable baselines" direction becomes practical only after #6.
-- #10 should land with or after #11.
+The two bugs #16 was originally scoped around (#3, #6) are **already fixed** — do not re-fix them.
 
 ---
 
