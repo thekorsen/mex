@@ -19,6 +19,7 @@ import { checkBrokenLinks } from "./checkers/broken-link.js";
 import { toPosix } from "../paths.js";
 import { loadGroundingRuntime, type GroundingRuntime } from "../graph/runtime.js";
 import { findMexAnchors } from "../markdown.js";
+import { resolveComparisonBase } from "../git.js";
 
 /**
  * Nudges are once-per-project-root, not once-per-process. The MCP server is
@@ -107,6 +108,11 @@ export async function runDriftCheck(
     allClaims.push(...claims);
   }
 
+  // Resolve the upstream comparison base ONCE per run: it is repo-level, not
+  // per-file, so resolving it inside the loop below would spawn git per file.
+  // Never touches the network; degrades to source "local" with no merge base.
+  const comparisonBase = await resolveComparisonBase(projectRoot);
+
   // Run checkers that work on individual files
   for (const filePath of scaffoldFiles) {
     const source = toPosix(relative(projectRoot, filePath));
@@ -122,7 +128,17 @@ export async function runDriftCheck(
       source,
       projectRoot,
       config.stalenessThresholds,
-      { lastUpdated: typeof frontmatter?.last_updated === "string" ? frontmatter.last_updated : undefined },
+      {
+        lastUpdated: typeof frontmatter?.last_updated === "string" ? frontmatter.last_updated : undefined,
+        // Code the page claims to describe. Commits touching it since the
+        // branch point are drift the page has not caught up with.
+        claimedPaths: [...new Set(
+          allClaims
+            .filter((c) => c.source === source && c.kind === "path" && !c.negated)
+            .map((c) => c.value),
+        )],
+        base: comparisonBase,
+      },
     );
     allIssues.push(...stalenessIssues);
 
