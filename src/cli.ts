@@ -167,6 +167,13 @@ program
         return;
       }
 
+      // Exit-code contract (COMPATIBILITY.md § "CI contract"):
+      //   0 = clean or warnings/info only
+      //   1 = at least one error-severity drift issue  <- the gate
+      //   2 = mex could not complete the check at all
+      // 2 exists because an operational failure previously exited 1 with EMPTY
+      // stdout, which a gate cannot tell apart from real drift — it would read
+      // "no scaffold" as "wiki is accurate".
       if (hasErrors) process.exit(1);
 
       // Warm moment — a clean check just gave the user value. Quietly invite
@@ -174,7 +181,7 @@ program
       maybeShowInvite();
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exit(2);
     }
   });
 
@@ -352,11 +359,19 @@ program
   .description("Run drift check, then build targeted prompts for AI to fix flagged files")
   .option("--dry-run", "Show what would be synced without executing")
   .option("--warnings", "Include warning-only files (by default only errors are synced)")
+  .option(
+    "--non-interactive",
+    "Never prompt: print the repair brief and exit (auto-detected when stdin is not a TTY)",
+  )
   .action(async (opts) => {
     try {
       const config = loadConfig();
       const { runSync } = await import("./sync/index.js");
-      await runSync(config, { dryRun: opts.dryRun, includeWarnings: opts.warnings });
+      await runSync(config, {
+        dryRun: opts.dryRun,
+        includeWarnings: opts.warnings,
+        nonInteractive: opts.nonInteractive,
+      });
       maybeShowInvite();
     } catch (err) {
       console.error((err as Error).message);

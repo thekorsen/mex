@@ -1,0 +1,128 @@
+name: mex drift
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  # Manual runs: handy for confirming a drift fix without opening a PR.
+  workflow_dispatch:
+
+# Mandatory at the workflow level, not per step: mex fires telemetry from a
+# commander preAction hook on EVERY command (src/cli.ts:55-73). A workflow that
+# phones home on every PR is a defect, so kill it once for the whole job.
+env:
+  MEX_TELEMETRY: "0"
+  DO_NOT_TRACK: "1"
+
+# This workflow is deliberately REPORT-ONLY. No bot commit, no auto-repair, no
+# PR comment writing. A workflow with write access that mutates the wiki is a
+# different product with a much larger blast radius.
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    # No Node matrix on purpose: the drift score is a property of the repo
+    # content, not of the Node version. Running it twice just doubles the noise.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the staleness checkers read git log via src/git.ts, and
+          # a shallow clone would make "commits since change" wrong.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      - name: Gate on mex drift
+        shell: bash
+        run: |
+          # Actions bash steps run with -e; disable it so a failing check does
+          # not abort before the reporting code below runs. No pipe here either,
+          # so nothing can swallow the exit code.
+          REPORT="$RUNNER_TEMP/check.json"
+          set +e
+          node dist/cli.js check --json > "$REPORT"
+          EXIT=$?
+          set -e
+
+          if [ "$EXIT" -eq 2 ]; then
+            echo "::error::mex could not complete the drift check (exit 2). This is an OPERATIONAL failure of mex itself, NOT wiki drift - do not go hunting for drift that does not exist. See the step log above for the reason (e.g. no git repository, unreadable .mex/)."
+            {
+              echo "## mex drift: could not run"
+              echo
+              echo "\`mex check\` exited 2 (operational failure). No drift verdict was produced."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          if [ "$EXIT" -ne 0 ] && [ "$EXIT" -ne 1 ]; then
+            echo "::error::mex check exited with unexpected code $EXIT"
+            {
+              echo "## mex drift: unexpected exit code $EXIT"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          SCORE=$(jq -r '.score' "$REPORT")
+          ERRORS=$(jq -r '.counts.error' "$REPORT")
+          WARNINGS=$(jq -r '.counts.warning' "$REPORT")
+          INFOS=$(jq -r '.counts.info' "$REPORT")
+          FILES=$(jq -r '.filesChecked' "$REPORT")
+
+          {
+            echo "## mex drift"
+            echo
+            echo "Score: **$SCORE/100** across $FILES files"
+            echo
+            echo "| severity | count |"
+            echo "| --- | --- |"
+            echo "| error | $ERRORS |"
+            echo "| warning | $WARNINGS |"
+            echo "| info | $INFOS |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$EXIT" -eq 0 ]; then
+            echo "mex: drift score $SCORE/100 - no errors, $WARNINGS warning(s), $INFOS info."
+            exit 0
+          fi
+
+          # EXIT == 1: at least one error-severity issue. Name the files.
+          echo
+          echo "mex: drift score $SCORE/100 - $ERRORS error(s) block this PR:"
+          echo
+          jq -r '
+            [.issues[] | select(.severity == "error")]
+            | group_by(.file)
+            | .[]
+            | "  " + .[0].file,
+              (.[] | "    - " + .code + ": " + .message)
+          ' "$REPORT"
+
+          {
+            echo
+            echo "### Drift errors by file"
+            echo
+            echo "| file | code | message |"
+            echo "| --- | --- | --- |"
+            jq -r '
+              [.issues[] | select(.severity == "error")]
+              | group_by(.file)
+              | .[][]
+              | "| `" + .file + "` | " + .code + " | " + (.message | gsub("\\|"; "\\|")) + " |"
+            ' "$REPORT"
+            echo
+            echo "Fix the wiki or the code, then re-run. This workflow only reports; it never edits \`.mex/\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::error::mex drift check failed with $ERRORS error-severity issue(s). See the per-file list above."
+          exit 1
+
+      - name: Headless sync guard
+        shell: bash
+        # Proves no CI step needs a TTY. --non-interactive REPORTS: it emits the
+        # repair brief and exits. It never repairs, and CI never commits.
+        run: |
+          node dist/cli.js sync --non-interactive < /dev/null
