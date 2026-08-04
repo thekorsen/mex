@@ -16,6 +16,7 @@ import { checkScriptCoverage } from "./checkers/script-coverage.js";
 import { checkToolConfigSync } from "./checkers/tool-config-sync.js";
 import { checkTodoFixme } from "./checkers/todo-fixme.js";
 import { checkBrokenLinks } from "./checkers/broken-link.js";
+import { checkOmpArtifacts } from "./checkers/omp-artifacts.js";
 import { toPosix } from "../paths.js";
 import { loadGroundingRuntime, type GroundingRuntime } from "../graph/runtime.js";
 import { findMexAnchors } from "../markdown.js";
@@ -167,6 +168,10 @@ export async function runDriftCheck(
   const toolConfigSyncIssues = checkToolConfigSync(projectRoot);
   allIssues.push(...toolConfigSyncIssues);
   checkerIssueCounts.push(["tool-config-sync", toolConfigSyncIssues.length]);
+
+  const ompArtifactIssues = checkOmpArtifacts(projectRoot);
+  allIssues.push(...ompArtifactIssues);
+  checkerIssueCounts.push(["omp-artifacts", ompArtifactIssues.length]);
 
   const todoFixmeIssues = checkTodoFixme(scaffoldFiles, projectRoot);
   allIssues.push(...todoFixmeIssues);
