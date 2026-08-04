@@ -200,7 +200,10 @@ const graphCommand = program
   .command("graph")
   .description("Build/rebuild the code knowledge graph into .mex/graph.db")
   .option("--json", "Output the build summary as JSON")
-  .option("--root <dir>", "Project root to index (defaults to current directory)")
+  // Declared once on the parent: commander resolves a parent-known flag even when
+  // it trails a subcommand name, so a duplicate `--root` on `query`/`scope`/`get`
+  // would never receive a value. Read back via `graphCommand.opts().root`.
+  .option("--root <dir>", "Project root to index, and to read the graph from (defaults to the resolved project root)")
   .action(async (opts) => {
     try {
       const { runGraph } = await import("./graph/cli-graph.js");
@@ -219,7 +222,7 @@ graphCommand
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
   .action((relation, target, options) => {
-    return import("./graph/cli-agent.js").then(({ runGraphQuery }) => runGraphQuery(relation, target, process.cwd(), {}, options));
+    return import("./graph/cli-agent.js").then(({ runGraphQuery, resolveGraphRoot }) => runGraphQuery(relation, target, resolveGraphRoot(graphCommand.opts().root), {}, options));
   });
 
 graphCommand
@@ -231,7 +234,7 @@ graphCommand
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
   .option("--fingerprint", "attach serialized node fingerprints (grounding workflow)")
   .action((task: string[], options) => {
-    return import("./graph/cli-agent.js").then(({ runGraphScope }) => runGraphScope(task.join(" "), process.cwd(), {}, options));
+    return import("./graph/cli-agent.js").then(({ runGraphScope, resolveGraphRoot }) => runGraphScope(task.join(" "), resolveGraphRoot(graphCommand.opts().root), {}, options));
   });
 
 graphCommand
@@ -241,7 +244,7 @@ graphCommand
   .option("--max-source-lines <n>", "per-node source line cap")
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .action((ids: string[], options) => {
-    return import("./graph/cli-agent.js").then(({ runGraphGet }) => runGraphGet(ids, process.cwd(), {}, options));
+    return import("./graph/cli-agent.js").then(({ runGraphGet, resolveGraphRoot }) => runGraphGet(ids, resolveGraphRoot(graphCommand.opts().root), {}, options));
   });
 
 graphCommand
@@ -267,8 +270,9 @@ program
   .option("--max-nodes <n>", "maximum impacted nodes to return")
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
+  .option("--root <dir>", "Project root to read the graph from (defaults to the resolved project root)")
   .action((target, options) => {
-    return import("./graph/cli-agent.js").then(({ runImpact }) => runImpact(target, process.cwd(), {}, options));
+    return import("./graph/cli-agent.js").then(({ runImpact, resolveGraphRoot }) => runImpact(target, resolveGraphRoot(options.root), {}, options));
   });
 
 // ── Agent Memory Events ──
