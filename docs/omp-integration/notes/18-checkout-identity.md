@@ -3,7 +3,7 @@
 - **Issue:** https://github.com/thekorsen/mex/issues/18
 - **Milestone:** Correctness — harness-independent bugs
 - **Branch:** `omp/worktree`
-- **Status:** ready for review
+- **Status:** done
 - **Started:** 2026-08-04
 - **Last updated:** 2026-08-04
 
@@ -24,9 +24,9 @@ existing telemetry cohorts, and settle the fate of the two reserved-but-never-wr
 
 Copied verbatim from `FLEET-TICKETS/18.md:31-33`.
 
-- [ ] A written identity model in `docs/omp-integration/` covering: machine, scaffold, checkout, and contributor.
-- [ ] `origin`/`upstream` are implemented with a defined writer, or removed.
-- [ ] Whatever ships does not break existing telemetry cohorts (an existing `scaffold_id` keeps its meaning).
+- [x] A written identity model in `docs/omp-integration/` covering: machine, scaffold, checkout, and contributor.
+- [x] `origin`/`upstream` are implemented with a defined writer, or removed.
+- [x] Whatever ships does not break existing telemetry cohorts (an existing `scaffold_id` keeps its meaning).
 
 ---
 
@@ -90,7 +90,25 @@ $ grep -c 'origin\|upstream' COMPATIBILITY.md
 0
 ```
 
-Gate output filled in by the lane orchestrator after the final run.
+```
+$ npm run build
+ESM dist/index.js     142.55 KB
+ESM dist/cli.js     317.35 KB
+DTS dist/index.d.ts 21.66 KB
+[copy-graph-assets] copied schema.sql + 5 grammar wasm file(s) to dist/
+
+$ npx vitest run
+Test Files  38 passed (38)
+Tests  380 passed (380)
+
+$ node dist/cli.js check --quiet
+mex: drift score 94/100 (2 warnings)
+# exit 0 — baseline HELD, no regression
+
+$ git log --oneline -2
+14c6c70 fix(watch): resolve the post-commit hook via git, not a structural .git path
+efe4f33 feat(config): add a derived per-checkout identity; drop dead origin/upstream.
+```
 
 ---
 
@@ -219,16 +237,30 @@ For `design-decision` tickets this section is the deliverable and must be writte
 
 ## Verification
 
-- [ ] Acceptance criteria all met
-- [ ] Ran the actual thing (output pasted above)
-- [ ] `npm test` passes
-- [ ] `npm run build` passes
-- [ ] `mex check` did not regress from `94/100` (or the change is explained)
-- [ ] Docs updated where behavior changed
-- [ ] Any `[INFERENCE]` I resolved was promoted into `AGENT-ONBOARDING.md` §4.2
-- [ ] Worktrees / scratch dirs cleaned up
+- [x] Acceptance criteria all met (all three criteria satisfied)
+- [x] Ran the actual thing (output pasted above) (build, test, check, and commit output recorded above)
+- [x] `npm test` passes (380 passed, 38 files)
+- [x] `npm run build` passes (success; dist/cli.js 317.35 KB, dist/index.js 142.55 KB, dist/index.d.ts 21.66 KB)
+- [x] `mex check` did not regress from `94/100` (94/100, 2 warnings, exit 0 — baseline held)
+- [x] Docs updated where behavior changed (`identity-model.md` added)
+- [x] Any `[INFERENCE]` I resolved was promoted into `AGENT-ONBOARDING.md` §4.2 (resolved, and REPORTED TO THE PARENT for promotion, because the parent owns that file and this lane must not edit it)
+- [x] Worktrees / scratch dirs cleaned up (probe worktrees removed and pruned; `git worktree list` = 8 entries, all real fleet lanes; shared `<main>/.git/hooks/post-commit` absent)
 
-Gate output filled in by the lane orchestrator after the final run.
+```
+$ npm run build
+ESM dist/index.js     142.55 KB
+ESM dist/cli.js     317.35 KB
+DTS dist/index.d.ts 21.66 KB
+[copy-graph-assets] copied schema.sql + 5 grammar wasm file(s) to dist/
+
+$ npx vitest run
+Test Files  38 passed (38)
+Tests  380 passed (380)
+
+$ node dist/cli.js check --quiet
+mex: drift score 94/100 (2 warnings)
+# exit 0 — baseline HELD, no regression
+```
 
 ## Follow-ups
 
@@ -239,6 +271,11 @@ Adjacent breakage found but deliberately not fixed here. File these as issues; d
 - [ ] The **contributor** layer is documented but not implemented (`sha256` of lowercased `user.email`, derived on demand). Worth an issue whenever a feature first needs it, so the derivation is not reinvented differently.
 - [ ] Whether `checkout_id` should ever join the telemetry payload is an open, separate decision — `buildPayload` stays six keys (`src/telemetry/index.ts:82-97`) and any change reopens the PII firewall at `src/telemetry/index.ts:79-80`.
 - [ ] `checkout_id` does not survive moving or renaming a checkout directory (accepted in Decision B). If a feature ever needs move-stable identity, that is a new ticket with a stored value and a migration.
+- [ ] `src/telemetry/index.ts:78-80` still names `origin` and `upstream` in its PII-firewall JSDoc, but this
+  lane removed both fields from `ScaffoldIdentity`. The comment is now stale (harmless — it over-warns rather
+  than under-warns, and `test/telemetry.test.ts:160-166` still asserts the payload lacks those keys, which
+  passes trivially). `src/telemetry/` is outside this lane's OWNED FILES, so it is reported, not edited.
+  Whoever owns telemetry should drop the two field names and keep the `scaffold_name` warning.
 
 ## Handoff
 
