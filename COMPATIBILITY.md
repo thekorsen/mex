@@ -26,14 +26,18 @@ Concretely, that's everything re-exported from
 - **Functions** — `findConfig`, `createConfig`, `appendEvent`, `readEvents`,
   `eventLogPath`, `runDriftCheck`, `parseFrontmatter`, `checkHeartbeat`,
   `runHeartbeat`.
+- **Graph retrieval functions** — `runGraphScope`, `runGraphGet`,
+  `runGraphQuery`, `runImpact`. See
+  [Graph retrieval](#graph-retrieval) for the precise boundary.
 - **Runtime constants** — `EVENT_KINDS`, `DEFAULT_STALENESS_THRESHOLDS`,
-  `DEFAULT_SCAFFOLD_PATTERNS`, `DEFAULT_HEARTBEAT_PATTERNS`.
+  `DEFAULT_SCAFFOLD_PATTERNS`, `DEFAULT_HEARTBEAT_PATTERNS`,
+  `DEFAULT_RETRIEVAL_OPTIONS`.
 - **Types** — `MexConfig`, `CreateConfigInput`, `EventEntry`, `EventKind`,
   `LogOpts`, `DriftReport`, `DriftIssue`, `RunDriftCheckOpts`,
   `HeartbeatResult`, `HeartbeatOpts`, `CheckHeartbeatOpts`,
   `StalenessThresholds`, `WatchConfig`, `HeartbeatConfig`, `AiTool`,
   `IssueCode`, `Severity`, `ScaffoldFrontmatter`, `FrontmatterEdge`, `Claim`,
-  `ClaimKind`.
+  `ClaimKind`, `AgentCommandDeps`, `AgentOptions`, `DetailLevel`.
 
 The CI smoke test at [`test/public-api.test.ts`](./test/public-api.test.ts)
 asserts the existence and basic shape of these exports. Any change that breaks
@@ -44,8 +48,10 @@ that test is a breaking change.
 Everything else. Specifically:
 
 - All internal modules — `src/cli.ts`, `src/sync/`, `src/scanner/`,
-  `src/setup/`, `src/tui.ts`, `src/watch.ts`, `src/doctor.ts`, and any other
-  path not re-exported from `src/index.ts`.
+  `src/setup/`, `src/tui.ts`, `src/watch.ts`, `src/doctor.ts`, `src/graph/`,
+  and any other path not re-exported from `src/index.ts`. The graph retrieval
+  operations re-exported from `src/index.ts` are the sole exception — see
+  [Graph retrieval](#graph-retrieval).
 - Deep imports such as `mex-agent/dist/internal.js` — the `exports` field in
   `package.json` blocks these, and they may break without notice.
 - The on-disk format of internal files such as the scaffold `config.json`. Use
@@ -89,6 +95,39 @@ These constants are exported so embedders can extend the defaults
 (`[...DEFAULT_SCAFFOLD_PATTERNS, "traces/**/*.md"]`) rather than re-typing the
 list. They are not a contract on the list's contents.
 
+## Graph retrieval
+
+Four retrieval operations are public: `runGraphScope`, `runGraphGet`,
+`runGraphQuery`, and `runImpact`. They exist as public exports because the MCP
+server ships as a separate package (`packages/mex-mcp`) and can reach
+`mex-agent` only through this entry point; compact, budgeted retrieval is worth
+a stable contract.
+
+The contract covers:
+
+- The four functions, their parameter order, and their streaming shape. Each is
+  synchronous, returns `void`, and emits one newline-delimited JSON record per
+  `write` call.
+- **`AgentCommandDeps.write`** — the seam that captures the JSONL stream.
+  `write` defaults to `console.log`; a host whose stdout carries a protocol
+  (an MCP stdio server, for instance) **must** pass its own `write`.
+- The `AgentOptions` field names — `detail`, `maxNodes`, `maxOutputTokens`,
+  `maxSourceLines`, `depth`, `fingerprint` — and `DEFAULT_RETRIEVAL_OPTIONS` as
+  a base to spread from. `maxOutputTokens` is enforced *while* records are
+  emitted, so a response is truncated rather than allowed to exceed it.
+- The emitted record `type` values (`meta`, `fact`, `edge`, `source`, `result`,
+  `target`, `defines`, `caller`, `grounding`, `error`, `summary`), the
+  `schemaVersion` field on `meta`, and the error `code` values. `meta` is
+  always first and `summary` always last.
+
+The contract does **not** cover anything that produces those records. The graph
+engine, tree-sitter extraction, symbol resolution, fingerprint reconciliation,
+and `schema.sql` remain internal, as does every other module under
+`src/graph/`. The public surface names *operations*, not implementations: no
+way to construct, mutate, or introspect a graph became public.
+
+Bumping `schemaVersion` is a breaking change and is surfaced as one.
+
 ## Scaffold-directory ownership
 
 ### Code-node grounding
@@ -103,7 +142,7 @@ grounds_to:
 
 Files without `grounds_to` retain their previous behavior. The graph database and grounding baselines under `.mex/` are internal mex data and should not be edited directly.
 
-The `LanguageExtractor` and `FrameworkResolver` interfaces are source-level contribution seams, not part of the public npm API, and may change between minor versions. They are intentionally not exported from `src/index.ts`.
+The `LanguageExtractor` and `FrameworkResolver` interfaces are source-level contribution seams, not part of the public npm API, and may change between minor versions. They are intentionally not exported from `src/index.ts`. See [Graph retrieval](#graph-retrieval) for the narrow set of graph *operations* that are public.
 
 Inside the `.mex/` scaffold directory, some paths are owned by `mex-agent`
 itself, and some are reserved for embedders.

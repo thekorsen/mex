@@ -1,12 +1,20 @@
 import simpleGit, { type SimpleGit, type LogResult } from "simple-git";
 
-let _git: SimpleGit | null = null;
+/**
+ * One handle per repository root. A long-lived process (the MCP server) serves
+ * many project roots in sequence, so a single shared handle would pin the first
+ * root's repository for every later caller.
+ */
+const gitByRoot = new Map<string, SimpleGit>();
 
 export function getGit(cwd?: string): SimpleGit {
-  if (!_git || cwd) {
-    _git = simpleGit(cwd ?? process.cwd());
+  const root = cwd ?? process.cwd();
+  let git = gitByRoot.get(root);
+  if (!git) {
+    git = simpleGit(root);
+    gitByRoot.set(root, git);
   }
-  return _git;
+  return git;
 }
 
 /** Get days since a file was last modified in git */

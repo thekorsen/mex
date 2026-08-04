@@ -1,7 +1,7 @@
 {
   "name": "mex-mcp",
   "version": "0.1.0",
-  "description": "MCP server for mex-agent — exposes check/log/timeline/heartbeat/read-file as native MCP tools",
+  "description": "MCP server for mex-agent — exposes check/log/timeline/heartbeat/read-file/graph-scope/graph-get/graph-query/impact as native MCP tools",
   "type": "module",
   "exports": {
     ".": {
