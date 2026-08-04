@@ -2,6 +2,7 @@ import { writeFileSync, readFileSync, existsSync, chmodSync, unlinkSync, mkdirSy
 import { resolve } from "node:path";
 import chalk from "chalk";
 import type { MexConfig } from "./types.js";
+import { runHeartbeat } from "./heartbeat.js";
 import { resolveHooksDir } from "./config.js";
 
 const HOOK_MARKER = "# mex-drift-check";
