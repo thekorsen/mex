@@ -52,11 +52,11 @@ Node identity is **Tier-1, content-independent**: `id = kind + ':' + sha256(file
 
 ### The public API boundary — respect it
 
-`src/index.ts` exports **only**: `findConfig`, `createConfig`, `getScaffoldIdentity`, `appendEvent`/`readEvents`/`eventLogPath`/`EVENT_KINDS`, `runDriftCheck`/`DEFAULT_SCAFFOLD_PATTERNS`, `parseFrontmatter`, `DEFAULT_STALENESS_THRESHOLDS`, `checkHeartbeat`/`runHeartbeat`/`DEFAULT_HEARTBEAT_PATTERNS`, plus types.
+`src/index.ts` exports **only**: `findConfig`, `createConfig`, `getScaffoldIdentity`, `appendEvent`/`readEvents`/`eventLogPath`/`EVENT_KINDS`, `runDriftCheck`/`DEFAULT_SCAFFOLD_PATTERNS`, `parseFrontmatter`, `DEFAULT_STALENESS_THRESHOLDS`, `checkHeartbeat`/`runHeartbeat`/`DEFAULT_HEARTBEAT_PATTERNS`, plus — since issue #10 — the four graph retrieval operations `runGraphScope`/`runGraphGet`/`runGraphQuery`/`runImpact` and `DEFAULT_OPTIONS` re-exported as `DEFAULT_RETRIEVAL_OPTIONS` (`src/index.ts:37-52`), plus types.
 
-`src/cli.ts`, `src/setup/`, `src/sync/`, `src/graph/`, `src/tui.ts` are **explicitly not public** (`COMPATIBILITY.md`). Issue #10 (graph over MCP) has to make a deliberate call about this rather than quietly reaching into internals.
+`src/cli.ts`, `src/setup/`, `src/sync/`, `src/graph/`, `src/tui.ts` are **explicitly not public** (`COMPATIBILITY.md`). Issue #10 made the call: promote a narrow, operation-named retrieval surface and accept the compat obligation, rather than reach into internals. The boundary is written down at `COMPATIBILITY.md` §"Graph retrieval" — the four operations, `AgentCommandDeps.write`, the `AgentOptions` field names, the record `type` values, and `schemaVersion` are public; everything that *produces* those records under `src/graph/**` is not. The surface names operations, not implementations, which is why `COMPATIBILITY.md:145`'s "`LanguageExtractor`/`FrameworkResolver` are not public" is still true.
 
-Also note `COMPATIBILITY.md:134-141` declares the CLI surface "best-effort, not contract-bound" — which is why issue #7 must carve out an explicit stable contract for anything CI depends on.
+Also note `COMPATIBILITY.md:173-181` declares the CLI surface "best-effort, not contract-bound" — which is why issue #7 must carve out an explicit stable contract for anything CI depends on.
 
 ---
 
@@ -145,7 +145,9 @@ Every line below was run in this working tree. Reproduce before doubting.
 - **Staleness signals:** `src/drift/checkers/staleness.ts:5-9` thresholds (30/90 days, 50/200 commits); `src/git.ts:13-29` days-since; `:32-49` commits-since (the one genuinely multi-author signal); `:42` `totalCommits` is dead code; `:53-63` `getGitDiff` hardcoded `HEAD~5..HEAD`.
 - **Whole-file overwrite:** `src/graph/runtime.ts:159` and `:234`. "Surgical edits" is prose in `templates/SYNC.md:45-53`, enforced by nothing.
 - **Frontmatter parse failure is silent:** `src/markdown.ts:24-31` returns `null` on error → staleness/edges/grounding go dark for that file.
-- **Process-global state:** `src/drift/index.ts:23-24` (nudge flags), `src/git.ts:3-10` (SimpleGit singleton), `src/global-config.ts:129` (`isDevRepo()` walks up from `process.cwd()`).
+- **Process-global state:** `src/drift/index.ts:23-24` (nudge flags), `src/git.ts:3-10` (SimpleGit singleton), `src/global-config.ts:129` (`isDevRepo()` walks up from `process.cwd()`). The first two are **fixed** by issue #11 — nudges are now a `Set<string>` keyed on `projectRoot` (`src/drift/index.ts:23-29`, checks at `:86-96`) and git handles a `Map<string, SimpleGit>` (`src/git.ts:3-18`, no callsite changed). The third stands: `isDevRepo()` still reads `process.cwd()`, and its sole caller is the telemetry gate at `src/telemetry/index.ts:57`.
+- **`mex-mcp` can only reach `mex-agent` through `dist/index.js`** — the dependency is `"mex-agent": "file:../.."` (`packages/mex-mcp/package.json:22`), the `exports` map publishes only `.` → `./dist/index.js` plus `./package.json` (`package.json:11-17`), and tsup emits exactly two bundles, `dist/cli.js` and `dist/index.js` (`tsup.config.ts:8-34`). **There is no `dist/graph/*` on disk**, so "import internals from a workspace sibling" fails at module resolution, not merely at policy. This is what forced issue #10's public-API decision.
+- **⚠️ stdout is the JSON-RPC channel in `mex-mcp`.** The four retrieval functions are synchronous, return `void`, and stream JSONL through `deps.write`, which **defaults to `console.log`** (`src/graph/cli-agent.ts:23-26,38`). Any MCP tool that calls them without passing a capturing `write` interleaves records into the protocol stream and corrupts the session — the client sees malformed frames, not a mex error. Current tools pass one (`packages/mex-mcp/src/tools/graph.ts:43-46,78,107,140,174`). Note also `runGraphQuery` takes `(relation, target, rootDir, …)` — relation **first**, unlike the other three (`src/graph/cli-agent.ts:122-126`).
 - **Exit codes:** `src/cli.ts:165` `process.exit(1)` on any error-severity issue; `src/doctor.ts:33` `process.exitCode = 1`.
 - **TTY-bound paths:** `src/sync/index.ts:14-22,205,302`; `sync.sh:156`; `src/tui.ts:53`; `src/graph/cli-ground.ts:121-122`.
 - **Anchors are byte-identical:** 5 of 6 `templates/.tool-configs/` files; asserted by `test/tool-config-templates.test.ts:33-40`.
@@ -154,7 +156,7 @@ Every line below was run in this working tree. Reproduce before doubting.
 
 - **[INFERENCE]** Whether `simple-git`'s default `log()` includes merge commits. Materially affects the 50/200 commit thresholds on merge-heavy repos (issue #9).
 - **[INFERENCE]** Whether the dangling `.mex/sync.sh` references are pre-npm residue or an intentional legacy path (issue #19).
-- **[INFERENCE]** Whether gitignoring `graph.db` is upstream policy or this repo's choice. `COMPATIBILITY.md:117-120` calls it "generated … internal mex data", consistent with ignoring, but no team policy is stated (issue #5).
+- **[INFERENCE]** Whether gitignoring `graph.db` is upstream policy or this repo's choice. `COMPATIBILITY.md:156-159` calls it "generated … internal mex data", consistent with ignoring, but no team policy is stated (issue #5).
 - **Doc conflict in the harness:** `omp://marketplace.md` states marketplace installs load `omp.extensions` via symlink + `omp-plugins.lock.json`; other omp docs are less explicit. Verify empirically before depending on marketplace distribution (issue #16).
 - `evaluate/` and `visualize.sh` (55 KB, embedded Python viewer on port 4444) were not read.
 - Whether `mex init`'s five sub-scanners behave as the orchestrator implies — only `src/scanner/index.ts` was read.
