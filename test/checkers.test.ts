@@ -21,6 +21,10 @@ import type { Claim, ScaffoldFrontmatter } from "../src/types.js";
 vi.mock("../src/git.js", () => ({
   daysSinceLastChange: vi.fn(),
   commitsSinceLastChange: vi.fn(),
+  // `vi.mock` replaces the whole module, so every symbol staleness.ts imports
+  // from git.js must appear here or it is undefined at runtime.
+  commitsTouchingPaths: vi.fn(),
+  DEFAULT_COMMIT_COUNT_MODE: "no-merges",
 }));
 const gitMock = await import("../src/git.js");
 const { checkStaleness } = await import("../src/drift/checkers/staleness.js");
