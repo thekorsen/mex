@@ -235,11 +235,16 @@ describe("checkStaleness — upstream activity signal", () => {
       base,
     });
 
+    // The range MUST be mergeBase..<upstream ref>, not mergeBase..HEAD.
+    // Counting toward HEAD counts OUR OWN commits, which reports 0 for a
+    // checkout that is behind upstream — the exact case issue #9 exists for.
+    // Verified end to end: a clone 60 commits behind reported 0 until `until`
+    // was passed.
     expect(commitsTouchingPaths).toHaveBeenCalledWith(
       ["src/a.ts", "src/b.ts"],
       "deadbeef",
       "/tmp/repo",
-      { mode: "no-merges" },
+      { mode: "no-merges", until: "origin/main" },
     );
     expect(issues).toHaveLength(1);
     expect(issues[0]).toMatchObject({ severity: "warning", code: "STALE_FILE" });

@@ -3,7 +3,7 @@
 - **Issue:** https://github.com/thekorsen/mex/issues/9
 - **Milestone:** Multi-developer reconciliation
 - **Branch:** `omp/staleness`
-- **Status:** in progress
+- **Status:** done
 - **Started:** 2026-08-04
 - **Last updated:** 2026-08-04
 
@@ -189,6 +189,46 @@ because the whole suite was green while the function returned nothing useful.
   (`does/not/exist` → exit 128), so the graceful-degradation ladder is unaffected. Purely a
   legibility win with no behavioural cost.
 
+### Decision: count `mergeBase..<upstream ref>`, NOT `mergeBase..HEAD`
+
+The most important bug in this ticket, and it was invisible until the signal was
+activated and driven end to end on a real two-repo setup.
+
+- **Symptom:** `mex check` on a clone **60 commits behind** upstream, whose knowledge page
+  claims `src/app.ts`, and where all 60 upstream commits touched `src/app.ts`, reported
+  **score 100, zero issues**. The base resolved perfectly (`source:"tracking"`, `behind:60`)
+  and the claims extracted correctly, but `commitsTouchingPaths` returned **0**.
+- **Cause:** `commitsTouchingPaths` defaults `until` to `HEAD`, so the range was
+  `mergeBase..HEAD` — commits on **our** branch. Our clone had committed nothing, so
+  `HEAD == mergeBase` and the count was necessarily 0. Verified directly:
+  `git rev-list --count <mb>..HEAD -- src/app.ts` = **0** versus
+  `git rev-list --count <mb>..origin/main -- src/app.ts` = **60**.
+- **Chosen:** pass `until: opts.base.ref`, so the range is `mergeBase..<upstream ref>`.
+- **Why:** issue #9's question is literally *"what landed upstream that my knowledge does not
+  reflect?"*. That is upstream-not-ours. `mergeBase..HEAD` answers the opposite and — worse —
+  answers it with 0 in exactly the case the feature exists to catch: a checkout that has
+  fallen behind. A signal that is silent precisely when it should fire is worse than no signal.
+- **What this rules out:** using this signal to report *our own* unmerged work. That is
+  `ComparisonBase.ahead`, a separate question this ticket does not answer.
+- **Why the unit tests missed it:** the mocked test asserted the call shape it was written
+  against, and a mock has no opinion about which ref is semantically correct. Only real git on
+  two real repos could tell. `test/git-upstream.test.ts` now asserts **both** directions —
+  3 toward the upstream ref, 0 toward HEAD — so the distinction is pinned by construction.
+
+### Note: parent-approved out-of-lane edits
+
+Two files outside this lane's OWNED FILES list were edited, both with parent approval:
+
+- `test/checkers.test.ts` (+4 lines, `vi.mock` factory only). **Parent ruling:** approved and
+  correct — adding exports to `src/git.ts` broke that factory, since `vi.mock` replaces the
+  whole module and a partial factory leaves new imports undefined at runtime. Repairing it was
+  required for a green suite, not scope creep.
+- `src/drift/index.ts` (+7 lines: one import, one once-per-run base resolution, one opts
+  object). **Parent ruling:** the earlier restriction on this file was *reversed* — shipping
+  the feature inert is a scope shrink, and #9 is not done while the signal cannot fire. The
+  diff is deliberately append-shaped: nothing reordered or reformatted, and the sibling
+  anchors lane's one-line checker registration lands in a different part of the file.
+
 ### Decision: the comparison-base fallback ladder
 
 - **Options considered:** hardcode `origin/main`; require config; or a precedence ladder.
@@ -215,6 +255,7 @@ because the whole suite was green while the function returned nothing useful.
 
 ---
 
+
 ## Dead ends
 
 | Approach | Why it failed |
@@ -223,7 +264,7 @@ because the whole suite was green while the function returned nothing useful.
 | Replace `git.log({ file })` with plain `git log -- <file>` while eliminating the full scan | `log({file})` secretly compiles to `git log --follow`, and `.mex/ROUTER.md` has 4 renames, so for a **full-history** walk this drops 11 commits to 1. Found only by reading the installed simple-git source. **Refined by a later probe:** `--follow` is a *no-op for a `-1` lookup* (a rename commit touches the new path, so it is found either way), which is what makes the final `git log -1 --follow` + `rev-list --count` rewrite provably behaviour-preserving. `--follow` is kept regardless: free, and it documents the intent. |
 | Add `countMerges` / `upstreamRef` to `StalenessThresholds` | Owned by two sibling lanes (`src/types.ts`, `src/config.ts`) and the config loader rebuilds the struct field-by-field, so a new field is dropped on load. Would also merge-collide. |
 | Add a new issue code (e.g. `STALE_UPSTREAM`) for the code-drift signal | A parallel CI lane is building a PR gate on this checker's error-vs-warning severity. A new code changes their gate silently. Folded into the existing single `STALE_FILE` issue instead — which also preserves the deliberate "one condition costs the score once" behaviour at `src/drift/checkers/staleness.ts:60-67`. |
-| Wire the new `claimedPaths`/`base` signal directly into the `checkStaleness` call in `src/drift/index.ts` | That file is owned by the anchors lane this wave (it is gaining a checker registration line). Capability ships fully tested but inert at the production callsite; activating it is a 3-line change once that file is free. Recorded as a follow-up rather than a merge conflict. |
+| Ship the `claimedPaths`/`base` signal inert, wiring it at `src/drift/index.ts` later | Attempted first, because that file was initially another lane's. **The parent reversed the restriction and rejected the approach:** shipping the feature unable to fire is a scope shrink, and #9 is not done while the signal is dead. Activating it immediately exposed the `mergeBase..HEAD` direction bug that the inert version had hidden behind a green suite — so the shrink would also have shipped a broken feature. |
 | Judge the full-log scan by wall-clock speedup alone | First measurement showed only 1.19x on this repo and 1.3x on a 3001-commit repo — misleadingly weak, because ~25 ms/spawn of process cost dominates both sides. Isolating the spawn floor showed the real difference: 29.4 ms/file that grows with **total history** versus 4.0 ms that grows only with **distance**. The complexity change is the finding, not the raw ratio. |
 | `git worktree add` to reproduce detached HEAD | Lane rules forbid creating worktrees (the parent manages them). `git clone file://… && git checkout --detach` reproduces the same state — literal `"HEAD"` from `--abbrev-ref`, fatal `@{u}` — without touching worktree state. |
 | Trust a green test suite as proof `getGitDiff` worked | All 388 tests passed while `getGitDiff` returned **0 bytes** for a file with 304 lines of uncommitted changes. Only smoke-testing the real function on the real worktree exposed it. Two-dot `<base>..HEAD` cannot see the working tree, and `mex sync`'s brief is *built* to show uncommitted work. Tests now pin it (`test/git-upstream.test.ts`, "includes uncommitted work"), verified by mutation. |
@@ -236,10 +277,11 @@ because the whole suite was green while the function returned nothing useful.
 | File | Change |
 |---|---|
 | `src/git.ts` | Added `CommitCountMode`, `DEFAULT_COMMIT_COUNT_MODE`, `ComparisonBase`, `resolveComparisonBase`, `commitsTouchingPaths`. Reworked `commitsSinceLastChange` to `git log -1 --follow` + `rev-list --count` (kills the full-repo-log scan **and** the dead `totalCommits`). Rewrote `getGitDiff` to diff `<mergeBase>` (working-tree-inclusive) instead of `HEAD~5..HEAD`. Refs resolved with `--abbrev-ref` for legibility. `getGit` (lines 3-10) untouched — byte-identical, verified. |
-| `src/drift/checkers/staleness.ts` | Added `STALENESS_COMMIT_COUNT_MODE`; threads the count mode into `commitsSinceLastChange`; new optional upstream code-drift signal (`claimedPaths` + `base`), inert unless both are supplied. Still at most one `STALE_FILE` per file. |
-| `test/staleness.test.ts` | Extended by 12 tests: mode default pinned, mode threaded through, upstream signal inert/active boundaries, combined-signal collapse, shallow lower-bound wording, null degradation. |
-| `test/git-upstream.test.ts` | **New**, 9 real-git integration tests: five edge cases, merge-mode arithmetic, rename survival, working-tree diff, ref legibility. |
-| `test/checkers.test.ts` | Two lines added to its `vi.mock("../src/git.js")` factory. **Not in my owned list** — but my new import broke it (`vi.mock` replaces the whole module, so a partial factory leaves new symbols undefined). Flagged to parent. |
+| `src/drift/checkers/staleness.ts` | Added `STALENESS_COMMIT_COUNT_MODE`; threads the count mode into `commitsSinceLastChange`; new upstream code-drift signal counting `mergeBase..<upstream ref>` (`until: base.ref`) for the paths a page claims. Still at most one `STALE_FILE` per file. |
+| `src/drift/index.ts` | **+7 lines, parent-approved** (restriction reversed). Resolves the comparison base **once per run** — repo-level, so per-file resolution would spawn git 12 times — and passes each file's deduplicated non-negated `path` claims. Append-shaped: no reordering or reformatting. |
+| `test/staleness.test.ts` | Extended by 12 tests: mode default pinned, mode threaded through, upstream signal inert/active boundaries, the `until` upstream direction, combined-signal collapse, shallow lower-bound wording, null degradation. |
+| `test/git-upstream.test.ts` | **New**, 10 real-git integration tests: five edge cases, merge-mode arithmetic, rename survival, working-tree diff, ref legibility, and the upstream-vs-HEAD count direction. |
+| `test/checkers.test.ts` | +4 lines in its `vi.mock("../src/git.js")` factory. Outside the lane's owned list; **parent-approved** as required breakage repair. |
 | `docs/omp-integration/AGENT-ONBOARDING.md` | §4.3 merge-commit inference struck and promoted; six new §4.1 execution-verified rows; §4.2 staleness line rewritten to post-#9 line numbers. |
 
 ## Tests added or changed
@@ -248,13 +290,15 @@ because the whole suite was green while the function returned nothing useful.
 |---|---|
 | `STALENESS_COMMIT_COUNT_MODE === "no-merges"` | The documented intent from the decision above. Stops a silent change to what "50 commits" means. |
 | mode threaded into `commitsSinceLastChange`; `"all"` override reaches the git layer | The default is actually applied, not merely declared. |
-| upstream signal inert without `claimedPaths` **and** `base.mergeBase` | The production callsite's behaviour is unchanged today. Catches an accidentally-active signal. |
+| upstream signal inert without `claimedPaths` **and** `base.mergeBase` | A repo with no upstream must produce no upstream signal. Catches an accidentally-active signal. |
 | `all - noMerges === 1` on a repo with a real `--no-ff` merge, and default == `no-merges` | Merge-commit handling — the ticket's explicit requirement. **Mutation-verified twice:** flipping the default to `"all"` fails it, and dropping `--no-merges` from the `rev-list` args fails it. |
 | `commitsSinceLastChange` still returns a real number after a `git mv` | The file's identity survives a rename. Guards against returning `null`, not an off-by-one (`--follow` is a no-op for `-1`). |
 | zero-commit / no-remote / shallow / detached-HEAD all degrade without throwing | "unknown staleness" is acceptable; a stack trace is not. |
 | `getGitDiff` on a repo with <5 commits returns without throwing | The user-visible bug: `HEAD~5` is fatal on a young repo. |
 | `getGitDiff` includes **uncommitted** work | The `mex sync` brief must show work in progress. **Mutation-verified:** restoring `<base>..HEAD` fails it. Caught a real bug a green suite had missed. |
 | `ComparisonBase.ref` is `origin/main`, never `refs/remotes/...` | The ref reaches users in `STALE_FILE` messages. **Mutation-verified:** reverting to `--symbolic-full-name` fails it. |
+| `commitsTouchingPaths` receives `until: <upstream ref>` | The count must run toward upstream, not `HEAD`. **Mutation-verified:** dropping `until` fails it. |
+| Real git: 3 counted toward the upstream ref, 0 toward `HEAD` | The same contract where a mock cannot help — a mock has no opinion about which ref is semantically right. This is the assertion that would have caught the direction bug. |
 
 ---
 
@@ -263,7 +307,7 @@ because the whole suite was green while the function returned nothing useful.
 - [x] Acceptance criteria all met — all four, see below
 - [x] Ran the actual thing (`node dist/cli.js check --quiet` → `94/100`, plus a live
       `resolveComparisonBase`/`getGitDiff` smoke run on this worktree; output in the report)
-- [x] `npx vitest run` → **390 passed (38 files)**, up from 336
+- [x] `npx vitest run` → **391 passed (38 files)**, up from 336
 - [x] `npm run build` → success; `npx tsc --noEmit` → exit 0
 - [x] `mex check` did not regress from `94/100 (2 warnings)` — identical, same two
       `UNDOCUMENTED_SCRIPT` warnings
@@ -292,12 +336,12 @@ because the whole suite was green while the function returned nothing useful.
 
 ## Follow-ups
 
-Adjacent work deliberately **not** done here, to avoid colliding with sibling lanes:
+Adjacent work deliberately **not** done here:
 
-- [ ] Activate the code-drift signal at the production callsite: pass `claimedPaths` (from the
-      file's grounding/claims) and a once-per-run `base` from `src/drift/index.ts:115-121`.
-      Blocked only by that file being owned by the anchors lane this wave. Resolving the base
-      **once per run** rather than per file is the right shape — it is repo-level, not file-level.
+- [x] ~~Activate the code-drift signal at the production callsite.~~ **DONE** — the parent
+      reversed the `src/drift/index.ts` restriction, so the signal is live: `src/drift/index.ts`
+      resolves the base once per run and passes each file's `claimedPaths`. Verified firing end
+      to end (see below).
 - [ ] Expose the count mode in `.mex/config.json` via `loadStalenessThresholds`
       (`src/config.ts:128-172`) once that file is free. One field + one default.
 - [ ] Consider a `"first-parent"` mode with its own PR-count thresholds (see decision above).
@@ -309,7 +353,41 @@ Adjacent work deliberately **not** done here, to avoid colliding with sibling la
 
 ## Handoff
 
-Nothing outstanding for this ticket. The one thing a fresh session must not rediscover:
-**`simple-git`'s `log({ file })` is `git log --follow`**, and `.mex/ROUTER.md` has four renames
-behind it, so any "simplification" that drops `--follow` silently loses ten of its eleven
-commits of history.
+Ticket complete and the feature is live, not inert. Three things a fresh session must not
+rediscover:
+
+1. **`simple-git`'s `log({ file })` is `git log --follow`**, and `.mex/ROUTER.md` has four
+   renames behind it, so any "simplification" that drops `--follow` from a *full-history* walk
+   silently loses ten of its eleven commits. (`--follow` is a no-op for a `-1` lookup.)
+2. **The upstream count must run toward the upstream ref, not `HEAD`.** `mergeBase..HEAD`
+   returns 0 for a checkout that is behind — silent exactly when it should fire. Both
+   directions are pinned in `test/git-upstream.test.ts`.
+3. **A green suite is not evidence that a git function works.** Two real bugs (empty
+   `getGitDiff`, and the count direction above) survived a fully green 388-test run and fell
+   out only from driving the real CLI on real repos.
+
+### End-to-end proof the signal fires
+
+Two real repos: an `origin` repo with a knowledge page claiming `src/app.ts`, and a clone that
+committed nothing while commits landed upstream touching that exact file.
+
+```
+# 60 upstream commits touching the claimed code; clone is 60 behind
+$ node dist/cli.js check --json    # from the clone
+score 94  files 3
+  warning STALE_FILE .mex/context/architecture.md | 60 commits on origin/main touch code this file claims, since the branch point (threshold: 50)
+  warning STALE_FILE .mex/ROUTER.md              | 60 commits on origin/main touch code this file claims, since the branch point (threshold: 50)
+
+# 210 behind — escalates to error and the CI gate trips
+score 80
+  error STALE_FILE .mex/context/architecture.md | 210 commits on origin/main touch code this file claims, since the branch point (threshold: 200)
+$ node dist/cli.js check --quiet; echo $?
+1
+
+# after syncing to upstream (0 behind) the upstream signal goes silent;
+# the errors that remain are the pre-existing commits-since-last-update signal,
+# which is a DIFFERENT message — proof the two are not being conflated
+  error STALE_FILE .mex/ROUTER.md | 210 commits since file was last updated (threshold: 200)
+
+# no remote at all: signal absent, no throw, exit 0
+```

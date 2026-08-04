@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   DEFAULT_COMMIT_COUNT_MODE,
   commitsSinceLastChange,
+  commitsTouchingPaths,
   getGitDiff,
   resolveComparisonBase,
 } from "../src/git.js";
@@ -269,5 +270,44 @@ describe("git upstream resolution and counting", () => {
     expect(base.ref).not.toBeNull();
     expect(base.ref).not.toContain("refs/remotes/");
     expect(base.ref).toMatch(/^origin\//);
+  });
+
+  it("counts commits that landed UPSTREAM, not commits on our own branch", async () => {
+    // The regression this guards is the whole point of issue #9: "what landed
+    // upstream that my knowledge does not reflect?". A `mergeBase..HEAD` range
+    // counts OUR commits and returns 0 for a checkout that is behind, which is
+    // precisely the situation the feature exists to report. A mocked unit test
+    // cannot catch this — it has no opinion about which ref is correct — so the
+    // assertion has to run against real git.
+    const source = createRepo("mex-git-upstream-dir-src-");
+    initRepo(source);
+    write(source, "app.ts", "v0\n");
+    commitAll(source, "base");
+
+    const clone = createRepo("mex-git-upstream-dir-clone-");
+    git(["clone", `file://${source}`, clone], ".");
+
+    // Three commits land upstream, touching the claimed file. Our clone does
+    // nothing at all, so HEAD stays exactly at the merge base.
+    for (const n of [1, 2, 3]) {
+      write(source, "app.ts", `v0\nupstream-${n}\n`);
+      commitAll(source, `upstream ${n}`);
+    }
+    git(["fetch", "origin"], clone);
+
+    const base = await resolveComparisonBase(clone);
+    expect(base.ref).not.toBeNull();
+    expect(base.mergeBase).not.toBeNull();
+    expect(base.behind).toBe(3);
+
+    // Counting toward the upstream ref sees all three.
+    await expect(
+      commitsTouchingPaths(["app.ts"], base.mergeBase!, clone, { until: base.ref! }),
+    ).resolves.toBe(3);
+
+    // Counting toward HEAD sees none — the bug this test exists to prevent.
+    await expect(
+      commitsTouchingPaths(["app.ts"], base.mergeBase!, clone),
+    ).resolves.toBe(0);
   });
 });
