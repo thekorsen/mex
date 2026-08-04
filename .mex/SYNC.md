@@ -1,16 +1,18 @@
 # Sync — Realign This Scaffold
 
-## Recommended: Use sync.sh
+## Recommended: use the CLI
 
 ```bash
-.mex/sync.sh
+mex sync
 ```
 
-The script runs drift detection first, shows you exactly what's wrong, then offers:
-1. **Targeted sync** — AI fixes only the flagged files (fastest, cheapest)
-2. **Full resync** — AI re-reads everything and updates all scaffold files
-3. **Prompt export** — shows the prompts for manual paste
-4. **Exit** — fix it yourself
+`mex sync` runs drift detection first, then builds targeted sync prompts for the files with error-severity drift. Its interactive path needs a TTY; use `--dry-run` when running headless (CI, an agent session, or a pipe).
+
+Use these variants depending on what you need:
+1. `mex sync --dry-run` — preview the prompts without entering the interactive path; this is the headless option
+2. `mex sync --warnings` — include warning-only files instead of syncing only error-severity files
+3. `mex check` — inspect the drift report before choosing a sync path
+4. Use the manual prompt below if you prefer to paste the instructions yourself
 
 ## Quick Check
 
