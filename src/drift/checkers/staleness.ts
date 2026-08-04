@@ -95,12 +95,20 @@ export async function checkStaleness(
 
   const days = await daysSinceLastChange(filePath, cwd);
   const commits = await commitsSinceLastChange(filePath, cwd, { mode });
+  // Count `mergeBase..<upstream ref>` — commits that landed on the upstream
+  // branch and are NOT on ours. Issue #9's question is "what landed upstream
+  // that my knowledge does not reflect?", so `until` MUST be the upstream ref:
+  // defaulting to HEAD would count our own commits and report 0 for a checkout
+  // that is 60 commits behind, which is exactly the case that matters.
   const claimedCommits =
     opts.claimedPaths &&
     opts.claimedPaths.length > 0 &&
-    opts.base &&
-    opts.base.mergeBase !== null
-      ? await commitsTouchingPaths(opts.claimedPaths, opts.base.mergeBase, cwd, { mode })
+    opts.base?.mergeBase &&
+    opts.base.ref
+      ? await commitsTouchingPaths(opts.claimedPaths, opts.base.mergeBase, cwd, {
+          mode,
+          until: opts.base.ref,
+        })
       : null;
 
   const signals: StaleSignal[] = [];
@@ -118,7 +126,7 @@ export async function checkStaleness(
     if (s) {
       signals.push({
         severity: s.severity,
-        message: `${opts.base.shallow ? "At least " : ""}${claimedCommits} commits touching claimed code since ${opts.base.ref} (threshold: ${threshold})`,
+        message: `${opts.base.shallow ? "At least " : ""}${claimedCommits} commits on ${opts.base.ref} touch code this file claims, since the branch point (threshold: ${threshold})`,
       });
     }
   }
