@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Graph retrieval over MCP** — `packages/mex-mcp` gains `mex_graph_scope`, `mex_graph_get`, `mex_graph_query`, and `mex_impact`, bringing the retrieval surface that was previously CLI-only to MCP clients as first-class tool calls. Each takes an optional `projectRoot` like the existing five tools, returns the same newline-delimited `meta`/`fact`/`edge`/`source`/`summary` records the CLI emits (`schemaVersion` 1), and keeps the token budget exposed and defaulted — `tokenBudget` (1500) on scope/query/impact, `maxOutputTokens` on get — enforced while emitting, so output is bounded rather than truncated after the fact. A missing graph returns a structured `GRAPH_UNAVAILABLE` record, never a stack trace. [#10](https://github.com/thekorsen/mex/issues/10)
+- The four graph retrieval operations are now part of the public API: `runGraphScope`, `runGraphGet`, `runGraphQuery`, `runImpact`, plus `DEFAULT_RETRIEVAL_OPTIONS` and the `AgentCommandDeps`, `AgentOptions`, and `DetailLevel` types. This was a deliberate widening — `mex-mcp` is a separate package and can only reach `mex-agent` through its `exports` map, so the alternative was shelling out to the CLI. Everything else under `src/graph/` remains internal; see COMPATIBILITY.md.
+
+### Fixed
+- Process-global state in the long-lived MCP server no longer leaks across `projectRoot`s. The `SimpleGit` handle is keyed per repository root instead of being a singleton, and the graph nudge flags are tracked per project root instead of once per process — previously the first repo checked suppressed the "run `mex graph`" nudge for every other repo for the process lifetime. [#11](https://github.com/thekorsen/mex/issues/11)
+
 ## [0.7.0] - 2026-07-25
 
 ### Added

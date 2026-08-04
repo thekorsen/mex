@@ -2,7 +2,7 @@
 
 // ── AI Tool ──
 
-export type AiTool = "claude" | "cursor" | "windsurf" | "copilot" | "opencode" | "codex";
+export type AiTool = "claude" | "cursor" | "windsurf" | "copilot" | "opencode" | "codex" | "omp";
 
 export interface AiToolMeta {
   name: string;
@@ -18,6 +18,7 @@ export const AI_TOOLS: Record<AiTool, AiToolMeta> = {
   copilot:  { name: "Copilot",     cli: null,       promptFlag: [] },
   opencode: { name: "OpenCode",    cli: "opencode", promptFlag: ["run"] },
   codex:    { name: "Codex",       cli: "codex",    promptFlag: [] },
+  omp:      { name: "oh-my-pi",    cli: "omp",      promptFlag: ["-p"] },
 };
 
 // ── Config ──
@@ -49,7 +50,9 @@ export interface HeartbeatConfig {
 
 /**
  * Stable identity for a mex scaffold. Persisted in the scaffold's `config.json` and used
- * as the grouping key for anonymous telemetry (one scaffold = one project).
+ * as the grouping key for anonymous telemetry (one scaffold = one project), deliberately
+ * shared by every clone and worktree of that project. See {@link CheckoutIdentity} for
+ * per-working-tree identity.
  * `scaffold_id` is a random UUID v4 — never derived from path, repo, or git.
  */
 export interface ScaffoldIdentity {
@@ -57,10 +60,17 @@ export interface ScaffoldIdentity {
   scaffold_id: string;
   /** Human-readable name. Defaults to the project directory basename. */
   scaffold_name: string;
-  /** Where this scaffold originated from, if known. Nullable. */
-  origin: string | null;
-  /** Upstream this scaffold tracks, if any. Nullable. */
-  upstream: string | null;
+}
+
+/**
+ * Per-working-tree identity. Derived from the working tree's absolute git dir and never
+ * persisted, so it cannot be committed and differs per worktree and per clone.
+ */
+export interface CheckoutIdentity {
+  /** sha256 of this working tree's absolute git dir, first 32 hex chars. */
+  checkout_id: string;
+  /** basename of this checkout's own project root. */
+  checkout_name: string;
 }
 
 export interface MexConfig {
@@ -78,6 +88,8 @@ export interface MexConfig {
   heartbeat?: HeartbeatConfig;
   /** Scaffold identity, when present in config.json. See {@link getScaffoldIdentity}. */
   identity?: ScaffoldIdentity;
+  /** Checkout identity, derived at runtime. See {@link getCheckoutIdentity}. */
+  checkout?: CheckoutIdentity;
 }
 
 // ── Claims (extracted from markdown) ──
@@ -115,6 +127,10 @@ export type IssueCode =
   | "TOOL_CONFIG_DRIFT"
   | "TODO_FIXME"
   | "BROKEN_LINK"
+  // ── omp artifact integrity (emitted by src/drift/checkers/omp-artifacts.ts) ──
+  | "OMP_ANCHOR_BROKEN" //   an `@` import in .omp/AGENTS.md does not resolve (error)
+  | "OMP_RULE_DRIFT" //      a generated .omp/rules/ projection no longer matches its source (warning)
+  | "OMP_RULE_ORPHAN" //     a generated rule's source pattern is gone (warning)
   // ── Code-graph grounding (checker #12; emitted by src/drift/checkers/grounding.ts) ──
   // Added in Phase 0 so the grounding-checker contract typechecks and Track B
   // never has to reopen this shared union. See src/graph/grounding.ts.

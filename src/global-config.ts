@@ -120,13 +120,20 @@ export function setGlobalConfigKey(key: string, value: unknown): void {
  * Generalized from `setup/index.ts:127-138` — checks the real package name
  * `mex-agent` plus the legacy name `promexeus`. The bare `mex` name is
  * intentionally excluded (too generic — see the inline note below).
+ *
+ * `startDir` is the root to answer for, defaulting to `process.cwd()`. Pass it
+ * explicitly from any long-lived process: in a stdio MCP server, `process.cwd()`
+ * is wherever the harness was launched, not the project being queried, so the
+ * cwd default would answer for the wrong repo (same bug class as the SimpleGit
+ * singleton in `src/git.ts:3-10`). Mirrors the `projectRoot ?? process.cwd()`
+ * threading the MCP tools already do, e.g. `packages/mex-mcp/src/tools/check.ts`.
  */
-export function isDevRepo(): boolean {
+export function isDevRepo(startDir?: string): boolean {
   if (process.env.MEX_DEV) return true;
 
   try {
-    // Walk up from cwd to find the nearest package.json
-    let dir = process.cwd();
+    // Walk up from startDir to find the nearest package.json
+    let dir = resolve(startDir ?? process.cwd());
     while (true) {
       const pkgPath = join(dir, "package.json");
       if (existsSync(pkgPath)) {

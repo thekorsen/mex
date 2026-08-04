@@ -13,10 +13,26 @@ const INTERACTIVE_AI_TIMEOUT_MS = 15 * 60_000;
 
 function askUser(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
+  // Executor form, not `Promise.withResolvers`: this package compiles at
+  // `target: ES2022` (tsconfig.json:2) and withResolvers needs lib ES2024.
+  return new Promise<string>((resolve, reject) => {
+    // On EOF readline emits `close` and the `question` callback NEVER fires, so
+    // an unguarded prompt used to leave sync silently exiting 0 with drift
+    // unrepaired. Fail loudly instead; callers gate on a TTY check first.
+    let answered = false;
     rl.question(question, (answer) => {
+      answered = true;
       rl.close();
       resolve(answer.trim());
+    });
+    rl.once("close", () => {
+      if (!answered) {
+        reject(
+          new Error(
+            "mex sync needs a TTY to prompt, but stdin is closed. Use `mex sync --non-interactive` or `--dry-run`."
+          )
+        );
+      }
     });
   });
 }
@@ -89,11 +105,18 @@ type SyncMode = "interactive" | "prompts";
 /** Run targeted sync: detect → brief → AI → verify → ask → loop */
 export async function runSync(
   config: MexConfig,
-  opts: { dryRun?: boolean; includeWarnings?: boolean }
+  opts: { dryRun?: boolean; includeWarnings?: boolean; nonInteractive?: boolean }
 ): Promise<void> {
   let cycle = 0;
   let mode: SyncMode | null = null;
   let activeTool: AiTool | null = null;
+  // Explicit flag wins; otherwise infer from the terminal — both ends must be a
+  // TTY to prompt, since piped/closed stdin (CI, a bot) is never promptable.
+  // Either way sync must reach a deterministic end without reading stdin.
+  const nonInteractive =
+    opts.nonInteractive === true ||
+    process.stdin.isTTY !== true ||
+    process.stdout.isTTY !== true;
 
   while (true) {
     cycle++;
@@ -176,6 +199,20 @@ export async function runSync(
     if (opts.dryRun) {
       console.log(
         chalk.dim("\n--dry-run: showing prompt without executing\n")
+      );
+      const brief = await buildGroundingAwareBrief(targets, config);
+      console.log(brief);
+      console.log();
+      return;
+    }
+
+    // Headless: emit the brief for a bot/agent to act on, never prompt. This is
+    // a *reporting* path by design — sync does not repair unattended.
+    if (nonInteractive) {
+      console.log(
+        chalk.dim(
+          "\nnon-interactive: emitting the repair brief without launching an agent\n"
+        )
       );
       const brief = await buildGroundingAwareBrief(targets, config);
       console.log(brief);

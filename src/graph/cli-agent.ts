@@ -11,6 +11,7 @@ import {
 import { FingerprintStore } from "./fingerprint-store.js";
 import { serializeFingerprint } from "./fingerprint.js";
 import { BudgetLedger, estimateTokens, resolveOptions, SCHEMA_VERSION, type AgentOptions } from "./agent-protocol.js";
+import { findConfig } from "../config.js";
 
 type QueryRelation = "who-calls" | "what-calls" | "where-defined";
 
@@ -439,6 +440,26 @@ function dedupeById(nodes: GraphNode[]): GraphNode[] {
     out.push(node);
   }
   return out;
+}
+
+/**
+ * Read-side graph commands must resolve the repo root from any subdirectory, so
+ * they reuse the normal config lookup path rather than binding reads to the
+ * caller's cwd (`src/config.ts:54-101`). `findConfig()` throws when the `.mex/`
+ * scaffold is missing (`src/config.ts:73-81`), but agent consumers expect the
+ * machine-readable `GRAPH_UNAVAILABLE` envelope from `openSession()` instead of a
+ * stack trace (`src/graph/cli-agent.ts:449`), so lookup failure degrades to the
+ * current working directory and lets the existing envelope path fire. An explicit
+ * root remains an override with the same meaning as `mex graph --root`
+ * (`src/graph/cli-graph.ts:25-26`).
+ */
+export function resolveGraphRoot(explicitRoot?: string): string {
+  if (explicitRoot) return resolve(explicitRoot);
+  try {
+    return findConfig().projectRoot;
+  } catch {
+    return process.cwd();
+  }
 }
 
 function openSession(rootDir: string, deps: AgentCommandDeps, write: (line: string) => void): AgentGraphSession | null {

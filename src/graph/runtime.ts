@@ -1,10 +1,10 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync, type Stats } from "node:fs";
 import { relative, resolve } from "node:path";
 import { globSync } from "glob";
 import type { MexConfig, Grounding } from "../types.js";
 import { extractGroundings, findMexAnchors, rewriteMexAnchor, writeGroundings } from "../markdown.js";
 import { createGroundingChecker, type GroundingChecker, type GroundedSource } from "./grounding.js";
-import { createGraphEngine } from "./engine-impl.js";
+import { createGraphEngine, sha256 } from "./engine-impl.js";
 import type { GraphEngine } from "./engine.js";
 import { SUPPORTED_SOURCE_GLOB } from "./extraction/grammars.js";
 import { openGraphDatabase } from "./db/database.js";
@@ -94,10 +94,14 @@ export async function captureGroundingBaselines(
   }
 }
 
-/** Compare graph file metadata to disk; includes additions, edits, and deletions. */
+/**
+ * Compare graph file metadata to disk; includes additions, edits, and deletions.
+ * `files.content_hash` is the authority for content equality (`src/graph/schema.sql:106`), populated by `sha256(file.source)` during indexing (`src/graph/engine-impl.ts:205`): size is a cheap pre-filter, matching mtime short-circuits the read, and size-matched mtime changes fall back to hashing.
+ * We deliberately do not refresh stored `modified_at` when the hash proves content-identical, because that would turn this read path into a writer and undermine sharing one `graph.db` between checkouts; the re-read cost is only ~7 ms across this repo's 152 files.
+ */
 export function findChangedSourceFiles(projectRoot: string, db: SqliteDatabase): string[] {
-  const rows = db.prepare("SELECT path, size, modified_at FROM files").all() as Array<{
-    path: string; size: number; modified_at: number;
+  const rows = db.prepare("SELECT path, size, modified_at, content_hash FROM files").all() as Array<{
+    path: string; size: number; modified_at: number; content_hash: string;
   }>;
   const tracked = new Map(rows.map((row) => [row.path, row]));
   const current = globSync(SUPPORTED_SOURCE_GLOB, { cwd: projectRoot, ignore: SOURCE_IGNORE, nodir: true })
@@ -105,12 +109,39 @@ export function findChangedSourceFiles(projectRoot: string, db: SqliteDatabase):
   const changed: string[] = [];
   for (const path of current) {
     const row = tracked.get(path);
-    const stat = statSync(resolve(projectRoot, path));
-    if (!row || row.size !== stat.size || row.modified_at !== stat.mtimeMs) changed.push(path);
+    if (!row) {
+      changed.push(path);
+      continue;
+    }
+    const absPath = resolve(projectRoot, path);
+    let stat: Stats;
+    try {
+      stat = statSync(absPath);
+    } catch {
+      changed.push(path);
+      tracked.delete(path);
+      continue;
+    }
+    if (hasFileChanged(absPath, row, stat)) changed.push(path);
     tracked.delete(path);
   }
   changed.push(...tracked.keys());
   return [...new Set(changed)].sort();
+}
+
+function hasFileChanged(
+  absPath: string,
+  row: { size: number; modified_at: number; content_hash: string },
+  stat: Stats,
+): boolean {
+  if (row.size !== stat.size) return true;
+  if (row.modified_at === stat.mtimeMs) return false;
+  if (!row.content_hash) return true;
+  try {
+    return sha256(readFileSync(absPath, "utf-8")) !== row.content_hash;
+  } catch {
+    return true;
+  }
 }
 
 /** Persist only high-confidence MOVED repairs. AMBIGUOUS/GONE remain for the agent. */

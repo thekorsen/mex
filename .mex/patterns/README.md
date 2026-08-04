@@ -1,3 +1,9 @@
+---
+name: patterns-readme
+description: Authoring spec for pattern files — the format, the categories, the grounding slots, and what a Verify section must contain. Read before creating or editing a pattern.
+last_updated: "2026-08-04"
+---
+
 # Patterns
 
 This folder contains task-specific guidance — the things you would tell your agent if you were sitting next to it. Not generic instructions. Project-specific accumulated wisdom.
@@ -23,6 +29,42 @@ Default to generating a pattern. Only skip if:
 - The task truly has no project-specific gotchas (e.g. "how to write a for loop")
 
 If in doubt, generate the pattern. A pattern that turns out to be obvious costs nothing. A missing pattern costs a broken codebase.
+
+## Retrieval before authoring
+
+Do not write a pattern from memory of the code. Retrieve the neighborhood first, then
+ground the pattern to what came back.
+
+- `mex graph scope` — the entry point. Returns a scored, token-budgeted JSONL neighborhood
+  for a task. Use it to find the symbols a pattern is actually about.
+- `mex graph get` — expand source for specific node ids once scope has named them.
+- `mex graph query` — structural lookup: who-calls, what-calls, where-defined.
+- `mex impact` — transitive blast radius for a symbol or file. This is the one that tells
+  you whether a task type deserves a pattern at all: a wide blast radius is a gotcha.
+
+The same four operations are available over MCP as `mex_graph_scope`, `mex_graph_get`,
+`mex_graph_query`, and `mex_impact`, alongside `mex_check`, `mex_log`, `mex_timeline`,
+`mex_heartbeat`, and `mex_read_file`. Use whichever the session already has wired.
+
+Grounding is what keeps a pattern honest: take the `grounds_to` node ids and fingerprints
+from the facts these commands return, not from a guess. A pattern with no graph available
+is still worth writing — leave `grounds_to: []` and cite path:line in prose instead.
+
+## What a Verify section must contain
+
+A Verify section that says "run the tests" is not worth the file. Name the commands, in
+order, and the specific thing each one catches. The four gates for this project are:
+
+```bash
+npm run typecheck
+npm run build
+npx vitest run
+node dist/cli.js check --quiet
+```
+
+Set `MEX_TELEMETRY=0` before any of them. A pattern's Verify section should add the checks
+that are specific to *its* task type on top of these four — the gates catch regressions,
+the pattern catches the mistake the task type invites.
 
 ## Format
 

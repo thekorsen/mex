@@ -274,6 +274,83 @@ describe("built CLI main-module guard", () => {
   });
 });
 
+// Declared after the build suite above so it reuses that `dist/` artifact —
+// vitest runs suites in declaration order, so no second `npm run build`.
+describe("mex check exit-code contract", () => {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const cliPath = join(repoRoot, "dist", "cli.js");
+  const env = { ...process.env, MEX_TELEMETRY: "0", NO_COLOR: "1" };
+
+  it("exits 2 with empty stdout when it cannot check at all", () => {
+    // No git repo, no .mex/. A gate must be able to tell "mex broke" from
+    // "the wiki drifted" — exit 1 with empty stdout would read as "no drift".
+    const fixture = mkdtempSync(join(tmpdir(), "mex-nogit-"));
+    try {
+      const result = spawnSync(process.execPath, [cliPath, "check", "--json"], {
+        cwd: fixture,
+        encoding: "utf8",
+        env,
+      });
+
+      expect(result.status).toBe(2);
+      expect(result.stdout ?? "").toBe("");
+      expect((result.stderr ?? "").trim()).not.toBe("");
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it("exits 0 with a valid JSON document when no errors are present", () => {
+    const result = spawnSync(process.execPath, [cliPath, "check", "--json"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env,
+    });
+
+    expect(result.status).toBe(0);
+
+    // Score is repo content, not a contract — only the shape is asserted.
+    const report = JSON.parse(result.stdout) as {
+      score: number;
+      counts: { error: number };
+      contractVersion: number;
+    };
+    expect(typeof report.score).toBe("number");
+    expect(report.counts.error).toBe(0);
+    expect(typeof report.contractVersion).toBe("number");
+  }, 60_000);
+
+  it("exits 1 when error-severity drift exists", () => {
+    const fixture = mkdtempSync(join(tmpdir(), "mex-drift-"));
+    try {
+      execSync("git init -q", { cwd: fixture, stdio: "pipe" });
+      execSync("git config user.email mex@example.test", { cwd: fixture, stdio: "pipe" });
+      execSync("git config user.name mex-test", { cwd: fixture, stdio: "pipe" });
+      mkdirSync(join(fixture, ".mex"), { recursive: true });
+      writeFileSync(
+        join(fixture, ".mex", "ROUTER.md"),
+        "# Router\n\nThe entry point lives at `src/does-not-exist-abc.ts`.\n",
+      );
+      writeFileSync(join(fixture, "README.md"), "seed\n");
+      execSync("git add -A", { cwd: fixture, stdio: "pipe" });
+      execSync('git commit -qm "init"', { cwd: fixture, stdio: "pipe" });
+
+      const result = spawnSync(process.execPath, [cliPath, "check", "--json"], {
+        cwd: fixture,
+        encoding: "utf8",
+        env,
+      });
+
+      expect(result.status).toBe(1);
+
+      const report = JSON.parse(result.stdout) as { counts: { error: number } };
+      expect(report.counts.error).toBeGreaterThanOrEqual(1);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
 describe("mex --version", () => {
   it("reports the version from package.json (guards against hard-coded drift)", async () => {
     // cli.js is imported (and parsed with a safe argv) in beforeAll; this

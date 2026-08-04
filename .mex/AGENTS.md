@@ -1,25 +1,20 @@
 ---
 name: agents
 description: Always-loaded project anchor. Read this first. Contains project identity, non-negotiables, commands, and pointer to ROUTER.md for full context.
-last_updated: "2026-07-12"
+last_updated: "2026-08-04"
 ---
 
 # mex
 
 ## What This Is
-<!-- One sentence. What does this project do?
-     Length: 1 sentence maximum.
-     Not a tagline — a factual description of what the software does.
-     Example: "A REST API for managing inventory across multiple warehouse locations." -->
+mex keeps a repo-local living wiki (`.mex/`, structured Markdown committed to git) honest against a deterministic tree-sitter → SQLite code graph, so an agent starts from grounded project context instead of guessing; this fork adapts it to the oh-my-pi (`omp`) harness.
 
 ## Non-Negotiables
-<!-- Hard rules the agent must never violate. Not preferences — rules.
-     These are the things that, if broken, cause real damage to the codebase.
-     Length: 3-5 items. More than 5 means the list has not been prioritised.
-     Example:
-     - Never write database queries outside of the repository layer
-     - Never commit secrets or API keys
-     - Always handle errors explicitly — no silent failures -->
+- Never edit `.mex/` prose just to make a checker pass — the checker is the only signal that the wiki still matches the code, so fix the drift or fix the code. Cite code as plain-text path:line; a backticked path becomes a checked claim (src/drift/checkers/path.ts:113-164).
+- src/index.ts is the only public API surface (`COMPATIBILITY.md`). The CLI, setup, sync, graph and TUI modules are private. Adding an export is a deliberate, reviewed decision.
+- Node >= 22.5 is hard, not advisory: the graph store uses the built-in `node:sqlite` `DatabaseSync` (src/graph/db/sqlite.ts:59, package.json:50).
+- `export MEX_TELEMETRY=0` in agent sessions — a `preAction` hook fires on every command (src/cli.ts:55-72).
+- Never commit build output, installed modules, or the graph database: dist/, node_modules/ and .mex/graph.db are gitignored (.gitignore:21).
 
 ## Commands
 - Dev: `npm run dev`

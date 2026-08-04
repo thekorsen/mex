@@ -16,12 +16,19 @@ import { checkScriptCoverage } from "./checkers/script-coverage.js";
 import { checkToolConfigSync } from "./checkers/tool-config-sync.js";
 import { checkTodoFixme } from "./checkers/todo-fixme.js";
 import { checkBrokenLinks } from "./checkers/broken-link.js";
+import { checkOmpArtifacts } from "./checkers/omp-artifacts.js";
 import { toPosix } from "../paths.js";
 import { loadGroundingRuntime, type GroundingRuntime } from "../graph/runtime.js";
 import { findMexAnchors } from "../markdown.js";
+import { resolveComparisonBase } from "../git.js";
 
-let graphUpgradeNudgeShown = false;
-let graphMigrationNudgeShown = false;
+/**
+ * Nudges are once-per-project-root, not once-per-process. The MCP server is
+ * long-lived and takes a `projectRoot` per call, so a process-wide flag would
+ * let the first repo checked suppress the nudge for every other repo.
+ */
+const graphUpgradeNudgeShown = new Set<string>();
+const graphMigrationNudgeShown = new Set<string>();
 
 /**
  * Default glob patterns used to locate scaffold markdown files, relative to
@@ -78,13 +85,13 @@ export async function runDriftCheck(
   if (hasGroundings || needsGroundingMigration) {
     try {
       groundingRuntime = await (opts.groundingRuntimeLoader ?? loadGroundingRuntime)(config);
-      if (!groundingRuntime && !graphUpgradeNudgeShown) {
-        graphUpgradeNudgeShown = true;
+      if (!groundingRuntime && !graphUpgradeNudgeShown.has(projectRoot)) {
+        graphUpgradeNudgeShown.add(projectRoot);
         (opts.graphWarning ?? console.warn)(
           "A code graph unlocks sharper drift detection. Run `mex graph`, then `mex graph ground`.",
         );
-      } else if (groundingRuntime && needsGroundingMigration && !graphMigrationNudgeShown) {
-        graphMigrationNudgeShown = true;
+      } else if (groundingRuntime && needsGroundingMigration && !graphMigrationNudgeShown.has(projectRoot)) {
+        graphMigrationNudgeShown.add(projectRoot);
         (opts.graphWarning ?? console.warn)(
           "Existing scaffold has no code grounding. Run `mex graph ground` to connect it.",
         );
@@ -102,6 +109,11 @@ export async function runDriftCheck(
     allClaims.push(...claims);
   }
 
+  // Resolve the upstream comparison base ONCE per run: it is repo-level, not
+  // per-file, so resolving it inside the loop below would spawn git per file.
+  // Never touches the network; degrades to source "local" with no merge base.
+  const comparisonBase = await resolveComparisonBase(projectRoot);
+
   // Run checkers that work on individual files
   for (const filePath of scaffoldFiles) {
     const source = toPosix(relative(projectRoot, filePath));
@@ -117,7 +129,17 @@ export async function runDriftCheck(
       source,
       projectRoot,
       config.stalenessThresholds,
-      { lastUpdated: typeof frontmatter?.last_updated === "string" ? frontmatter.last_updated : undefined },
+      {
+        lastUpdated: typeof frontmatter?.last_updated === "string" ? frontmatter.last_updated : undefined,
+        // Code the page claims to describe. Commits touching it since the
+        // branch point are drift the page has not caught up with.
+        claimedPaths: [...new Set(
+          allClaims
+            .filter((c) => c.source === source && c.kind === "path" && !c.negated)
+            .map((c) => c.value),
+        )],
+        base: comparisonBase,
+      },
     );
     allIssues.push(...stalenessIssues);
 
@@ -167,6 +189,10 @@ export async function runDriftCheck(
   const toolConfigSyncIssues = checkToolConfigSync(projectRoot);
   allIssues.push(...toolConfigSyncIssues);
   checkerIssueCounts.push(["tool-config-sync", toolConfigSyncIssues.length]);
+
+  const ompArtifactIssues = checkOmpArtifacts(projectRoot);
+  allIssues.push(...ompArtifactIssues);
+  checkerIssueCounts.push(["omp-artifacts", ompArtifactIssues.length]);
 
   const todoFixmeIssues = checkTodoFixme(scaffoldFiles, projectRoot);
   allIssues.push(...todoFixmeIssues);

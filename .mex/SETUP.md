@@ -4,13 +4,13 @@ This file contains the prompts to populate the scaffold. It is NOT the dev envir
 
 This scaffold is currently empty. Follow the steps below to populate it for your project.
 
-## Recommended: Use setup.sh
+## Recommended: use the CLI
 
 ```bash
-.mex/setup.sh
+mex setup
 ```
 
-The script handles everything automatically:
+The command handles everything automatically:
 1. Detects your project state (existing codebase, fresh project, or partial)
 2. Asks which AI tool you use and copies the right config file
 3. Pre-scans your codebase with `mex init` to build a structured brief (~5-8k tokens vs ~50k from AI exploration)
@@ -224,5 +224,5 @@ A well-populated scaffold should give the agent enough to:
 Once the scaffold is populated, use these to keep it aligned with your codebase:
 
 - **`mex check`** — detect drift (zero tokens, zero AI)
-- **`.mex/sync.sh`** — interactive drift check + targeted or full resync
+- **`mex sync`** — generate targeted sync prompts; use `mex sync --dry-run` to preview them, or `mex check --fix` to run sync when the check finds error-severity issues
 - **`mex watch`** — auto drift score after every commit

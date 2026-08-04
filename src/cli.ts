@@ -60,13 +60,18 @@ program.hook("preAction", (_thisCommand, actionCommand) => {
     const parentName = actionCommand.parent?.name();
     if (parentName === "telemetry" || parentName === "config") return;
 
+    // Resolve the project root once and hand it to telemetry, so the dev-repo
+    // guard answers for THIS project rather than process.cwd().
     let scaffoldId: string | undefined;
+    let projectRoot: string | undefined;
     try {
-      scaffoldId = readScaffoldId(findConfig().scaffoldRoot);
+      const config = findConfig();
+      projectRoot = config.projectRoot;
+      scaffoldId = readScaffoldId(config.scaffoldRoot);
     } catch {
-      // No scaffold (or not in one) — omit scaffold_id.
+      // No scaffold (or not in one) — omit scaffold_id and fall back to cwd.
     }
-    captureCommand(actionCommand.name(), scaffoldId);
+    captureCommand(actionCommand.name(), scaffoldId, projectRoot);
   } catch {
     // Telemetry must never affect command behaviour.
   }
@@ -162,6 +167,13 @@ program
         return;
       }
 
+      // Exit-code contract (COMPATIBILITY.md § "CI contract"):
+      //   0 = clean or warnings/info only
+      //   1 = at least one error-severity drift issue  <- the gate
+      //   2 = mex could not complete the check at all
+      // 2 exists because an operational failure previously exited 1 with EMPTY
+      // stdout, which a gate cannot tell apart from real drift — it would read
+      // "no scaffold" as "wiki is accurate".
       if (hasErrors) process.exit(1);
 
       // Warm moment — a clean check just gave the user value. Quietly invite
@@ -169,7 +181,7 @@ program
       maybeShowInvite();
     } catch (err) {
       console.error((err as Error).message);
-      process.exit(1);
+      process.exit(2);
     }
   });
 
@@ -200,7 +212,10 @@ const graphCommand = program
   .command("graph")
   .description("Build/rebuild the code knowledge graph into .mex/graph.db")
   .option("--json", "Output the build summary as JSON")
-  .option("--root <dir>", "Project root to index (defaults to current directory)")
+  // Declared once on the parent: commander resolves a parent-known flag even when
+  // it trails a subcommand name, so a duplicate `--root` on `query`/`scope`/`get`
+  // would never receive a value. Read back via `graphCommand.opts().root`.
+  .option("--root <dir>", "Project root to index, and to read the graph from (defaults to the resolved project root)")
   .action(async (opts) => {
     try {
       const { runGraph } = await import("./graph/cli-graph.js");
@@ -219,7 +234,7 @@ graphCommand
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
   .action((relation, target, options) => {
-    return import("./graph/cli-agent.js").then(({ runGraphQuery }) => runGraphQuery(relation, target, process.cwd(), {}, options));
+    return import("./graph/cli-agent.js").then(({ runGraphQuery, resolveGraphRoot }) => runGraphQuery(relation, target, resolveGraphRoot(graphCommand.opts().root), {}, options));
   });
 
 graphCommand
@@ -231,7 +246,7 @@ graphCommand
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
   .option("--fingerprint", "attach serialized node fingerprints (grounding workflow)")
   .action((task: string[], options) => {
-    return import("./graph/cli-agent.js").then(({ runGraphScope }) => runGraphScope(task.join(" "), process.cwd(), {}, options));
+    return import("./graph/cli-agent.js").then(({ runGraphScope, resolveGraphRoot }) => runGraphScope(task.join(" "), resolveGraphRoot(graphCommand.opts().root), {}, options));
   });
 
 graphCommand
@@ -241,7 +256,7 @@ graphCommand
   .option("--max-source-lines <n>", "per-node source line cap")
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .action((ids: string[], options) => {
-    return import("./graph/cli-agent.js").then(({ runGraphGet }) => runGraphGet(ids, process.cwd(), {}, options));
+    return import("./graph/cli-agent.js").then(({ runGraphGet, resolveGraphRoot }) => runGraphGet(ids, resolveGraphRoot(graphCommand.opts().root), {}, options));
   });
 
 graphCommand
@@ -267,8 +282,9 @@ program
   .option("--max-nodes <n>", "maximum impacted nodes to return")
   .option("--max-output-tokens <n>", "hard output token ceiling")
   .option("--max-source-lines <n>", "per-node source line cap (with --detail source)")
+  .option("--root <dir>", "Project root to read the graph from (defaults to the resolved project root)")
   .action((target, options) => {
-    return import("./graph/cli-agent.js").then(({ runImpact }) => runImpact(target, process.cwd(), {}, options));
+    return import("./graph/cli-agent.js").then(({ runImpact, resolveGraphRoot }) => runImpact(target, resolveGraphRoot(options.root), {}, options));
   });
 
 // ── Agent Memory Events ──
@@ -343,11 +359,19 @@ program
   .description("Run drift check, then build targeted prompts for AI to fix flagged files")
   .option("--dry-run", "Show what would be synced without executing")
   .option("--warnings", "Include warning-only files (by default only errors are synced)")
+  .option(
+    "--non-interactive",
+    "Never prompt: print the repair brief and exit (auto-detected when stdin is not a TTY)",
+  )
   .action(async (opts) => {
     try {
       const config = loadConfig();
       const { runSync } = await import("./sync/index.js");
-      await runSync(config, { dryRun: opts.dryRun, includeWarnings: opts.warnings });
+      await runSync(config, {
+        dryRun: opts.dryRun,
+        includeWarnings: opts.warnings,
+        nonInteractive: opts.nonInteractive,
+      });
       maybeShowInvite();
     } catch (err) {
       console.error((err as Error).message);

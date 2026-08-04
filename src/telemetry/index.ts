@@ -41,8 +41,12 @@ export interface EnabledResult {
  * 5. else → on
  *
  * Env + dev checks run before any disk read.
+ *
+ * `projectRoot` is the root the dev-repo guard answers for; it defaults to
+ * `process.cwd()`. Long-lived processes (the stdio MCP server) must pass it —
+ * their cwd is the harness's, not the queried project's.
  */
-export function isEnabled(): EnabledResult {
+export function isEnabled(projectRoot?: string): EnabledResult {
   // 1. Industry-standard opt-out
   if (process.env.DO_NOT_TRACK === "1") {
     return { enabled: false, reason: "DO_NOT_TRACK" };
@@ -54,7 +58,7 @@ export function isEnabled(): EnabledResult {
   }
 
   // 3. Dev-repo guard (no disk read for global config yet)
-  if (isDevRepo()) {
+  if (isDevRepo(projectRoot)) {
     return { enabled: false, reason: "dev" };
   }
 
@@ -148,10 +152,12 @@ export function __setTransport(fn: TransportFn | null): void {
  *
  * If telemetry is disabled, returns immediately.
  * All errors are swallowed — telemetry must never affect command behaviour.
+ *
+ * `projectRoot` is forwarded to the dev-repo guard; see {@link isEnabled}.
  */
-export function capture(event: string, command: string, scaffoldId?: string): void {
+export function capture(event: string, command: string, scaffoldId?: string, projectRoot?: string): void {
   try {
-    const { enabled } = isEnabled();
+    const { enabled } = isEnabled(projectRoot);
     if (!enabled) return;
 
     const machineId = getMachineId();
@@ -190,9 +196,11 @@ export function capture(event: string, command: string, scaffoldId?: string): vo
  *
  * `scaffoldId` is the **string** scaffold_id only — never the full
  * ScaffoldIdentity object. This is the PII firewall.
+ *
+ * `projectRoot` is forwarded to the dev-repo guard; see {@link isEnabled}.
  */
-export function captureCommand(command: string, scaffoldId?: string): void {
-  capture(EVENT, command, scaffoldId);
+export function captureCommand(command: string, scaffoldId?: string, projectRoot?: string): void {
+  capture(EVENT, command, scaffoldId, projectRoot);
 }
 
 /**

@@ -1,7 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname, isAbsolute, basename } from "node:path";
-import { randomUUID } from "node:crypto";
-import type { MexConfig, AiTool, StalenessThresholds, WatchConfig, HeartbeatConfig, ScaffoldIdentity } from "./types.js";
+import { createHash, randomUUID } from "node:crypto";
+import type { MexConfig, AiTool, StalenessThresholds, WatchConfig, HeartbeatConfig, ScaffoldIdentity, CheckoutIdentity } from "./types.js";
+import { AI_TOOLS } from "./types.js";
 import { DEFAULT_STALENESS_THRESHOLDS } from "./drift/checkers/staleness.js";
 
 /**
@@ -61,7 +63,7 @@ export function findConfig(startDir?: string): MexConfig {
   }
 
   // Try git root first, fall back to cwd if no git repo
-  const gitRoot = findProjectRoot(dir);
+  const gitRoot = findGitRoot(dir);
   const projectRoot = gitRoot ?? dir;
 
   const mexDir = resolve(projectRoot, ".mex");
@@ -89,7 +91,17 @@ export function findConfig(startDir?: string): MexConfig {
   return { projectRoot, scaffoldRoot, aiTools, stalenessThresholds, watch, heartbeat, identity };
 }
 
-function findProjectRoot(dir: string): string | null {
+/**
+ * Walk up from `dir` to the nearest ancestor containing `.git`, or `null` when
+ * there is none. `existsSync` is true for a `.git` **file** as well as a
+ * directory, which is what makes a git worktree its own project root.
+ *
+ * Exported so `mex setup` resolves its root by the same rule as every other
+ * command instead of keeping a second, subtly different walk. Setup cannot use
+ * {@link findConfig} itself — that requires the `.mex/` scaffold setup is about
+ * to create.
+ */
+export function findGitRoot(dir: string): string | null {
   let current = resolve(dir);
   while (true) {
     if (existsSync(resolve(current, ".git"))) {
@@ -112,17 +124,35 @@ interface MexPersistedConfig {
   heartbeat?: unknown;
   scaffold_id?: unknown;
   scaffold_name?: unknown;
-  origin?: unknown;
-  upstream?: unknown;
+  // Unknown keys are preserved by mergeIntoConfig, so stale origin/upstream keys
+  // already on disk survive round-trip unchanged. Deliberately no migration strips them.
   [key: string]: unknown;
 }
-
-const VALID_AI_TOOLS = new Set<string>(["claude", "cursor", "windsurf", "copilot", "opencode", "codex"]);
 
 function loadAiTools(raw: MexPersistedConfig | null): AiTool[] {
   const arr = raw?.aiTools;
   if (!Array.isArray(arr)) return [];
-  return arr.filter((v): v is AiTool => typeof v === "string" && VALID_AI_TOOLS.has(v));
+  // Validated against AI_TOOLS itself, so adding a tool to the union cannot
+  // silently fail to persist — an unlisted tool is dropped on every reload.
+  return arr.filter((v): v is AiTool => typeof v === "string" && v in AI_TOOLS);
+}
+
+/**
+ * Run `git rev-parse` in argv form. `execFileSync` avoids a shell, so repo paths
+ * containing spaces or shell metacharacters are safe; `stdio` silences the
+ * `fatal: not a git repository` stderr on the non-repo path.
+ */
+function gitRevParse(cwd: string, ...args: string[]): string | null {
+  try {
+    const out = execFileSync("git", ["rev-parse", ...args], {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
 }
 
 function loadStalenessThresholds(scaffoldRoot: string, raw: MexPersistedConfig | null): StalenessThresholds | undefined {
@@ -213,8 +243,6 @@ function loadScaffoldIdentity(raw: MexPersistedConfig | null): ScaffoldIdentity 
   return {
     scaffold_id: id,
     scaffold_name: typeof raw.scaffold_name === "string" ? raw.scaffold_name : "",
-    origin: typeof raw.origin === "string" ? raw.origin : null,
-    upstream: typeof raw.upstream === "string" ? raw.upstream : null,
   };
 }
 
@@ -259,8 +287,6 @@ export function saveScaffoldIdentity(scaffoldRoot: string, identity: ScaffoldIde
   mergeIntoConfig(scaffoldRoot, {
     scaffold_id: identity.scaffold_id,
     scaffold_name: identity.scaffold_name,
-    origin: identity.origin,
-    upstream: identity.upstream,
   });
 }
 
@@ -283,8 +309,6 @@ export function ensureScaffoldIdentity(scaffoldRoot: string, projectRoot: string
   const identity: ScaffoldIdentity = {
     scaffold_id: existing?.scaffold_id ?? randomUUID(),
     scaffold_name: basename(projectRoot),
-    origin: existing?.origin ?? null,
-    upstream: existing?.upstream ?? null,
   };
   try {
     saveScaffoldIdentity(scaffoldRoot, identity);
@@ -302,6 +326,39 @@ export function getScaffoldIdentity(config: MexConfig): ScaffoldIdentity {
   const identity = ensureScaffoldIdentity(config.scaffoldRoot, config.projectRoot);
   config.identity = identity;
   return identity;
+}
+
+/**
+ * Directory git will actually run hooks from for `projectRoot`. Verified on git
+ * 2.50.1: `git rev-parse --git-path hooks` returns `.git/hooks` at a main repo
+ * root, `../.git/hooks` from a subdir, an absolute common-dir path inside a
+ * linked worktree, and honors `core.hooksPath`. Git runs `post-commit` from the
+ * common hooks dir for every worktree, while per-worktree hooks never fire, so
+ * this resolves the one shared hooks dir rather than a per-worktree one. See
+ * src/watch.ts.
+ */
+export function resolveHooksDir(projectRoot: string): string | null {
+  const hooksDir = gitRevParse(projectRoot, "--git-path", "hooks");
+  return hooksDir ? resolve(projectRoot, hooksDir) : null;
+}
+
+/**
+ * Per-working-tree identity. Derived and never written to config.json, so it
+ * cannot be committed. With no git dir (findConfig allows a scaffold without a
+ * repo), this falls back to hashing `projectRoot`, which is still per-checkout.
+ * The 32-hex-character prefix matches the existing graph node-id convention at
+ * src/graph/extraction/node-id.ts:28-38. A moved or renamed checkout gets a new
+ * checkout_id by design.
+ */
+export function getCheckoutIdentity(config: MexConfig): CheckoutIdentity {
+  if (config.checkout) return config.checkout;
+  const gitDir = gitRevParse(config.projectRoot, "--absolute-git-dir");
+  const checkout: CheckoutIdentity = {
+    checkout_id: createHash("sha256").update(gitDir ?? config.projectRoot).digest("hex").slice(0, 32),
+    checkout_name: basename(config.projectRoot),
+  };
+  config.checkout = checkout;
+  return checkout;
 }
 
 function findScaffoldRoot(projectRoot: string): string | null {

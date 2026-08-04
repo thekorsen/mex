@@ -26,12 +26,17 @@ import {
   findConfig,
   createConfig,
   getScaffoldIdentity,
+  runGraphScope,
+  runGraphGet,
+  runGraphQuery,
+  runImpact,
 
   // runtime constants
   EVENT_KINDS,
   DEFAULT_STALENESS_THRESHOLDS,
   DEFAULT_SCAFFOLD_PATTERNS,
   DEFAULT_HEARTBEAT_PATTERNS,
+  DEFAULT_RETRIEVAL_OPTIONS,
 
   // types (compile-time only — verified by usage below)
   type MexConfig,
@@ -45,6 +50,7 @@ import {
   type StalenessThresholds,
   type ScaffoldFrontmatter,
   type ScaffoldIdentity,
+  type AgentOptions,
 } from "../src/index.js";
 
 let tmpDir: string;
@@ -76,6 +82,13 @@ describe("public API — function exports", () => {
     expect(typeof createConfig).toBe("function");
     expect(typeof getScaffoldIdentity).toBe("function");
   });
+
+  it("exports the graph retrieval operations promoted for mex-mcp", () => {
+    expect(typeof runGraphScope).toBe("function");
+    expect(typeof runGraphGet).toBe("function");
+    expect(typeof runGraphQuery).toBe("function");
+    expect(typeof runImpact).toBe("function");
+  });
 });
 
 describe("public API — getScaffoldIdentity", () => {
@@ -84,8 +97,6 @@ describe("public API — getScaffoldIdentity", () => {
     expect(typeof identity.scaffold_id).toBe("string");
     expect(identity.scaffold_id.length).toBeGreaterThan(0);
     expect(typeof identity.scaffold_name).toBe("string");
-    expect(identity.origin).toBeNull();
-    expect(identity.upstream).toBeNull();
   });
 });
 
@@ -114,6 +125,13 @@ describe("public API — runtime constants", () => {
   it("exports DEFAULT_HEARTBEAT_PATTERNS as a non-empty list", () => {
     expect(Array.isArray(DEFAULT_HEARTBEAT_PATTERNS)).toBe(true);
     expect(DEFAULT_HEARTBEAT_PATTERNS.length).toBeGreaterThan(0);
+  });
+
+  it("exports DEFAULT_RETRIEVAL_OPTIONS with a bounded token budget", () => {
+    const opts: AgentOptions = DEFAULT_RETRIEVAL_OPTIONS;
+    expect(opts.maxOutputTokens).toBeGreaterThan(0);
+    expect(opts.maxNodes).toBeGreaterThan(0);
+    expect(opts.detail).toBe("minimal");
   });
 });
 
