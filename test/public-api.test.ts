@@ -97,8 +97,6 @@ describe("public API — getScaffoldIdentity", () => {
     expect(typeof identity.scaffold_id).toBe("string");
     expect(identity.scaffold_id.length).toBeGreaterThan(0);
     expect(typeof identity.scaffold_name).toBe("string");
-    expect(identity.origin).toBeNull();
-    expect(identity.upstream).toBeNull();
   });
 });
 

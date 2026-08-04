@@ -49,7 +49,9 @@ export interface HeartbeatConfig {
 
 /**
  * Stable identity for a mex scaffold. Persisted in the scaffold's `config.json` and used
- * as the grouping key for anonymous telemetry (one scaffold = one project).
+ * as the grouping key for anonymous telemetry (one scaffold = one project), deliberately
+ * shared by every clone and worktree of that project. See {@link CheckoutIdentity} for
+ * per-working-tree identity.
  * `scaffold_id` is a random UUID v4 — never derived from path, repo, or git.
  */
 export interface ScaffoldIdentity {
@@ -57,10 +59,17 @@ export interface ScaffoldIdentity {
   scaffold_id: string;
   /** Human-readable name. Defaults to the project directory basename. */
   scaffold_name: string;
-  /** Where this scaffold originated from, if known. Nullable. */
-  origin: string | null;
-  /** Upstream this scaffold tracks, if any. Nullable. */
-  upstream: string | null;
+}
+
+/**
+ * Per-working-tree identity. Derived from the working tree's absolute git dir and never
+ * persisted, so it cannot be committed and differs per worktree and per clone.
+ */
+export interface CheckoutIdentity {
+  /** sha256 of this working tree's absolute git dir, first 32 hex chars. */
+  checkout_id: string;
+  /** basename of this checkout's own project root. */
+  checkout_name: string;
 }
 
 export interface MexConfig {
@@ -78,6 +87,8 @@ export interface MexConfig {
   heartbeat?: HeartbeatConfig;
   /** Scaffold identity, when present in config.json. See {@link getScaffoldIdentity}. */
   identity?: ScaffoldIdentity;
+  /** Checkout identity, derived at runtime. See {@link getCheckoutIdentity}. */
+  checkout?: CheckoutIdentity;
 }
 
 // ── Claims (extracted from markdown) ──
