@@ -13,6 +13,20 @@ const severityIcon: Record<Severity, string> = {
   info: "ℹ",
 };
 
+/**
+ * Machine contract version for `mex check --json`. Bump ONLY on a breaking
+ * change to the emitted shape; additive fields do not bump it.
+ * See COMPATIBILITY.md § "CI contract".
+ */
+export const CHECK_JSON_CONTRACT_VERSION = 1;
+
+/** Issue counts keyed by `Severity`. Every severity is present, zero included. */
+export function countBySeverity(issues: DriftIssue[]): Record<Severity, number> {
+  const counts: Record<Severity, number> = { error: 0, warning: 0, info: 0 };
+  for (const issue of issues) counts[issue.severity]++;
+  return counts;
+}
+
 export function reportConsole(report: DriftReport): void {
   // Show score at top so it's visible before scrolling through issues
   if (report.issues.length > 0) {
@@ -47,10 +61,7 @@ export function reportConsole(report: DriftReport): void {
 }
 
 export function reportQuiet(report: DriftReport): void {
-  const errors = report.issues.filter((i) => i.severity === "error").length;
-  const warnings = report.issues.filter(
-    (i) => i.severity === "warning"
-  ).length;
+  const { error: errors, warning: warnings } = countBySeverity(report.issues);
   const parts = [];
   if (errors) parts.push(`${errors} error${errors > 1 ? "s" : ""}`);
   if (warnings) parts.push(`${warnings} warning${warnings > 1 ? "s" : ""}`);
@@ -65,7 +76,15 @@ export function reportQuiet(report: DriftReport): void {
 }
 
 export function reportJSON(report: DriftReport, opts?: { verbose?: boolean }): void {
-  const output = opts?.verbose ? report : { ...report, verboseLog: undefined };
+  const base = opts?.verbose ? report : { ...report, verboseLog: undefined };
+  // `counts` and `contractVersion` are additive: the original four fields keep
+  // their names and positions. A CI gate must not have to reduce `issues` by
+  // severity in jq just to answer "should this build fail?".
+  const output = {
+    ...base,
+    counts: countBySeverity(report.issues),
+    contractVersion: CHECK_JSON_CONTRACT_VERSION,
+  };
   console.log(JSON.stringify(output, null, 2));
 }
 
@@ -79,11 +98,7 @@ export function reportVerbose(report: DriftReport): void {
 }
 
 function printSummary(report: DriftReport): void {
-  const errors = report.issues.filter((i) => i.severity === "error").length;
-  const warnings = report.issues.filter(
-    (i) => i.severity === "warning"
-  ).length;
-  const infos = report.issues.filter((i) => i.severity === "info").length;
+  const { error: errors, warning: warnings, info: infos } = countBySeverity(report.issues);
   const color =
     report.score >= 80
       ? chalk.green
