@@ -20,8 +20,13 @@ import { toPosix } from "../paths.js";
 import { loadGroundingRuntime, type GroundingRuntime } from "../graph/runtime.js";
 import { findMexAnchors } from "../markdown.js";
 
-let graphUpgradeNudgeShown = false;
-let graphMigrationNudgeShown = false;
+/**
+ * Nudges are once-per-project-root, not once-per-process. The MCP server is
+ * long-lived and takes a `projectRoot` per call, so a process-wide flag would
+ * let the first repo checked suppress the nudge for every other repo.
+ */
+const graphUpgradeNudgeShown = new Set<string>();
+const graphMigrationNudgeShown = new Set<string>();
 
 /**
  * Default glob patterns used to locate scaffold markdown files, relative to
@@ -78,13 +83,13 @@ export async function runDriftCheck(
   if (hasGroundings || needsGroundingMigration) {
     try {
       groundingRuntime = await (opts.groundingRuntimeLoader ?? loadGroundingRuntime)(config);
-      if (!groundingRuntime && !graphUpgradeNudgeShown) {
-        graphUpgradeNudgeShown = true;
+      if (!groundingRuntime && !graphUpgradeNudgeShown.has(projectRoot)) {
+        graphUpgradeNudgeShown.add(projectRoot);
         (opts.graphWarning ?? console.warn)(
           "A code graph unlocks sharper drift detection. Run `mex graph`, then `mex graph ground`.",
         );
-      } else if (groundingRuntime && needsGroundingMigration && !graphMigrationNudgeShown) {
-        graphMigrationNudgeShown = true;
+      } else if (groundingRuntime && needsGroundingMigration && !graphMigrationNudgeShown.has(projectRoot)) {
+        graphMigrationNudgeShown.add(projectRoot);
         (opts.graphWarning ?? console.warn)(
           "Existing scaffold has no code grounding. Run `mex graph ground` to connect it.",
         );
