@@ -132,6 +132,12 @@ Every line below was run in this working tree. Reproduce before doubting.
 | mex writes no `.gitignore` | fresh scratch repo | none created — **issue #12** |
 | `sync --dry-run` is headless | stdin closed | prints brief, exit 0 |
 | `check --json` shape | `--json` | `{score, issues, filesChecked, timestamp}` — **no** top-level `errors`/`warnings` counts |
+| **`simple-git`'s default `log()` INCLUDES merge commits** (issue #9; was §4.3) | `log().all` vs `git log --merges` on this repo | all 24 merge shas present; `all.length` = 200 = `git rev-list --count HEAD`. So the 50/200 thresholds counted merges until #9 set `--no-merges` as the default |
+| **`git.log({ file })` compiles to `git log --follow <pathspec>`** (issue #9) | read the `filterString(opt.file)` branch in the installed `simple-git` 3.36.0, then compared output | `--follow` is rename-following. `.mex/ROUTER.md` has **4 renames** behind it, so `git log --follow` yields 11 commits where plain `git log --` yields 1. **Never drop `--follow` from a full-history walk of a knowledge file.** |
+| `--follow` is a **no-op for a `-1` lookup** (issue #9) | probe repo: rename, then query with and without `--follow` | Identical sha both ways — a rename commit touches the new path, so it is found regardless. This is why #9's `git log -1 --follow` + `rev-list --count` rewrite is behaviour-preserving |
+| Commit-count semantics differ per mode (issue #9) | `.mex/ROUTER.md`, 4 modes | pre-#9 `findIndex`=36, `rev-list --count`=36, `--no-merges`=32, `--first-parent`=6. `--first-parent` is a **different scale** and would need its own thresholds |
+| Per-file full-log scan cost (issue #9) | 3001-commit synthetic repo, 12 files, ~25.3 ms/spawn floor | full `log()` **29.4 ms/file** and scales with **total history**; `git rev-list --count` **4.0 ms** at distance 100 / 16.3 ms at 3000, scaling with **distance only** |
+| Staleness degrades, never throws (issue #9) | zero-commit repo; 1 commit no remote; `--depth 1` clone; detached HEAD; uncommitted file | zero commits makes `rev-parse HEAD`, `rev-list --count HEAD`, and `log -1 -- <file>` **all** fatal; detached HEAD prints the literal `"HEAD"` from `--abbrev-ref` and `@{u}` is fatal; shallow clone reports `--is-shallow-repository` = `true` so counts are lower bounds. All covered in `test/git-upstream.test.ts` |
 
 ### 4.2 Verified by source reading (cite these directly)
 
@@ -142,7 +148,7 @@ Every line below was run in this working tree. Reproduce before doubting.
 - **Grounding drift needs a local baseline:** `src/drift/checkers/grounding.ts:36-39` — `if (baselineSource && current.bodyHash !== baselineSource.bodyHash)`. `baselineSource` comes from `_mex_grounded_source` inside the gitignored `graph.db`.
 - **The baseline skip:** `src/graph/runtime.ts:214-224` — `updateFingerprints: false` (default for setup and `graph ground`, `:91`) **skips** the baseline when the committed fingerprint differs. `mex sync` passes `true` (`src/sync/index.ts:250`), rewriting the committed fingerprint.
 - **mtime change detection:** `src/graph/runtime.ts:108-109` compares `size` and `mtimeMs`. `files.content_hash` **already exists** (`schema.sql:106`) and is **already populated** (`engine-impl.ts:206`) — just never consulted.
-- **Staleness signals:** `src/drift/checkers/staleness.ts:5-9` thresholds (30/90 days, 50/200 commits); `src/git.ts:13-29` days-since; `:32-49` commits-since (the one genuinely multi-author signal); `:42` `totalCommits` is dead code; `:53-63` `getGitDiff` hardcoded `HEAD~5..HEAD`.
+- **Staleness signals** (rewritten by issue #9): `src/drift/checkers/staleness.ts:11-16` thresholds (30/90 days, 50/200 commits); `src/git.ts` now carries `CommitCountMode`/`DEFAULT_COMMIT_COUNT_MODE` (`:12-16`), `ComparisonBase` (`:22-37`), and `resolveComparisonBase` (`:142`), which walks explicit ref → `@{upstream}` → `origin/HEAD` → sole remote HEAD → `local` and **never** touches the network. `commitsSinceLastChange` (`:240`) is the one genuinely multi-author signal; it now does `git log -1 --follow` + `git rev-list --count`, so the old full-repo-log scan and the dead `totalCommits` are both gone. `getGitDiff` (`:304`) diffs `<mergeBase>` — deliberately **not** `<mergeBase>..HEAD`, so uncommitted work is included for the `mex sync` brief. The pre-#9 state was: `:13-29` days-since, `:32-49` commits-since, `:42` dead `totalCommits`, `:53-63` `getGitDiff` hardcoded `HEAD~5..HEAD`.
 - **Whole-file overwrite:** `src/graph/runtime.ts:159` and `:234`. "Surgical edits" is prose in `templates/SYNC.md:45-53`, enforced by nothing.
 - **Frontmatter parse failure is silent:** `src/markdown.ts:24-31` returns `null` on error → staleness/edges/grounding go dark for that file.
 - **Process-global state:** `src/drift/index.ts:23-24` (nudge flags), `src/git.ts:3-10` (SimpleGit singleton), `src/global-config.ts:129` (`isDevRepo()` walks up from `process.cwd()`).
@@ -152,7 +158,7 @@ Every line below was run in this working tree. Reproduce before doubting.
 
 ### 4.3 Explicitly NOT verified — verify before relying on
 
-- **[INFERENCE]** Whether `simple-git`'s default `log()` includes merge commits. Materially affects the 50/200 commit thresholds on merge-heavy repos (issue #9).
+- ~~**[INFERENCE]** Whether `simple-git`'s default `log()` includes merge commits.~~ **RESOLVED by issue #9 — promoted to §4.1.**
 - **[INFERENCE]** Whether the dangling `.mex/sync.sh` references are pre-npm residue or an intentional legacy path (issue #19).
 - **[INFERENCE]** Whether gitignoring `graph.db` is upstream policy or this repo's choice. `COMPATIBILITY.md:117-120` calls it "generated … internal mex data", consistent with ignoring, but no team policy is stated (issue #5).
 - **Doc conflict in the harness:** `omp://marketplace.md` states marketplace installs load `omp.extensions` via symlink + `omp-plugins.lock.json`; other omp docs are less explicit. Verify empirically before depending on marketplace distribution (issue #16).
