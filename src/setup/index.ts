@@ -12,7 +12,7 @@ import {
   buildExistingWithBriefPrompt,
   buildExistingNoBriefPrompt,
 } from "./prompts.js";
-import { saveAiTools, ensureScaffoldIdentity } from "../config.js";
+import { saveAiTools, ensureScaffoldIdentity, findGitRoot } from "../config.js";
 import { isCliAvailable } from "../cli-tools.js";
 import { captureGroundingBaselines } from "../graph/runtime.js";
 import { extractFrontmatter } from "../markdown.js";
@@ -98,15 +98,6 @@ const info = (msg: string) => console.log(`${chalk.blue("→")} ${msg}`);
 const warn = (msg: string) => console.log(`${chalk.yellow("!")} ${msg}`);
 const header = (msg: string) => console.log(`\n${chalk.bold(msg)}`);
 
-function findProjectRoot(): string {
-  let current = resolve(process.cwd());
-  while (true) {
-    if (existsSync(resolve(current, ".git"))) return current;
-    const parent = dirname(current);
-    if (parent === current) return process.cwd();
-    current = parent;
-  }
-}
 
 function isTemplateContent(content: string): boolean {
   return content.includes("[Project Name]") || content.includes("[YYYY-MM-DD]");
@@ -321,7 +312,12 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
     );
   }
 
-  const projectRoot = findProjectRoot();
+  // Resolve by the same rule as every other command (`findConfig`, src/config.ts:65),
+  // so setup run from a subdirectory scaffolds the repo root rather than the cwd.
+  // `findConfig` itself is unusable here: it requires the `.mex/` scaffold this
+  // command creates. Degrading to the cwd is deliberate — `mex setup` in a
+  // not-yet-git directory is a legitimate first move.
+  const projectRoot = findGitRoot(process.cwd()) ?? process.cwd();
   const mexDir = resolve(projectRoot, ".mex");
 
   // Guard: don't run inside the mex repo itself

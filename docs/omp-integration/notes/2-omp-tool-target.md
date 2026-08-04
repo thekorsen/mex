@@ -38,6 +38,38 @@ with the `cli`/`promptFlag` metadata correct enough that a later lane can drive 
 | `TOOL_CHOICE_MAP` maps menu key → `AiTool` separately from `TOOL_CONFIGS` | `src/setup/index.ts:516-524` | read-only |
 | Existing anchors are never overwritten | `src/setup/index.ts:569-573` | read-only + executed |
 | `templates/` ships wholesale via `package.json:23`, so no packaging change was needed for `templates/omp/**` | `package.json:21-27` | read-only |
+| **Setup carried a duplicate, argument-less root resolver** falling back to `process.cwd()` | `src/setup/index.ts:68-76` (before); canonical rule at `src/config.ts:65` | read-only + executed |
+
+### Cross-lane finding: the duplicate root resolver (relayed from the graph lane)
+
+While fixing **#3** (graph commands failing from any subdirectory), the graph lane found that the
+duplicate root resolver in `src/setup/index.ts:68-76` carried the **same blind spot**: it was
+argument-less, walked up from `process.cwd()`, and fell back to `process.cwd()` rather than `null`.
+The onboarding ledger already flagged this duplication at §4.2 ("Any root-resolution change must
+touch both"). Credit for the finding is theirs; the fix here is mine because the file is in this
+lane's OWNED FILES.
+
+**What I measured before changing anything.** Two premises in the relay did not reproduce in this
+worktree, and it matters for anyone reading the two lanes side by side:
+
+1. `resolveGraphRoot` at `src/graph/cli-agent.ts:456` **does not exist in this branch** — that line
+   is `unavailable(write, error);`. The named shape is presumably new work on the graph lane's own
+   branch, unmerged here. I could not follow it literally, so I followed its *stated principle*
+   (resolve like the rest of the CLI, then degrade rather than throw).
+2. Setup was **already correct for the plain subdirectory case**: its walk-up did find the git root,
+   so `mex setup` from `deep/nested/` scaffolded the repo root, verified by execution before I
+   touched it. The real divergence is narrower — **when no git root exists anywhere**, setup
+   silently scaffolds into the *cwd*, so running it from `sub/` of a non-repo creates
+   `sub/.mex/`, while `findConfig` would raise "No git repository found" (`src/config.ts:75-77`).
+
+**Fix.** `findGitRoot(dir)` is now exported from `src/config.ts:103` — the single walk that
+`findConfig` itself uses (`:65`) — and setup calls it inline. Setup cannot call `findConfig`: that
+requires the `.mex/` scaffold setup exists to create. Degrading to the cwd is kept deliberately,
+because `mex setup` in a not-yet-git directory is a legitimate first move; `findConfig` only
+hard-errors once a scaffold is *also* absent (`src/config.ts:74-82`).
+
+`findGitRoot` is **not** added to the public API: `src/index.ts:14` re-exports selectively and was
+left alone, so `COMPATIBILITY.md` needs no change.
 
 ### The bug this ticket would have shipped with
 
@@ -104,6 +136,29 @@ $ printf '7\n' | node dist/cli.js setup
 ...  (all 9 artifacts skipped)
 ```
 
+Root resolution from a subdirectory, after the fix — `mex setup` run three levels deep:
+
+```
+$ cd deep/nested/further && printf '7\n' | node dist/cli.js setup
+✓ Copied .mex/ROUTER.md
+✓ Created .gitignore ignoring .mex/graph.db*
+✓ Copied .omp/AGENTS.md
+
+$ cd "$REPO_ROOT"
+--- .mex at repo root?        PASS
+--- .omp at repo root?        PASS
+--- .gitignore at repo root?  PASS
+--- nothing leaked into the subdir?
+PASS: subdir clean
+
+$ cd deep/nested/further && node dist/cli.js check --quiet
+mex: drift score 79/100 (7 warnings)     # findConfig agrees from the same subdir
+```
+
+The pre-existing divergence, measured before the change: in a directory tree with **no git root at
+all**, setup scaffolded into the cwd (`sub/.mex/`), while `findConfig` would have refused with
+"No git repository found". Both now share `findGitRoot`.
+
 ---
 
 ## Decisions
@@ -138,6 +193,10 @@ $ printf '7\n' | node dist/cli.js setup
 | A derived `const VALID_AI_TOOLS = new Set(Object.keys(AI_TOOLS))` | Correct, but `AI_TOOLS` is *already* a static `Record` — the right lookup for a small fixed string-keyed table. The intermediate `Set` allocated a second structure for nothing; `v in AI_TOOLS` is the whole fix. |
 | Inserting the omp row mid-menu | Renumbers four existing tools for cosmetic grouping. Appending shifts only "Multiple"/"None". |
 | Extending `templates/.tool-configs/` with an `omp` anchor | The five files there are byte-identical embedded anchors policed by `test/tool-config-templates.test.ts:33-40`. The omp bridge is a one-line pointer, so it belongs in `templates/omp/`, not beside them. |
+| Copying the graph lane's `resolveGraphRoot` from `src/graph/cli-agent.ts:456` verbatim | That symbol does not exist on this branch — `:456` is `unavailable(write, error);`. Their version lives on their unmerged branch. Followed the principle instead of the literal reference, and said so rather than inventing a citation. |
+| Having setup call `findConfig()` directly, as the relay suggested | `findConfig` throws when no `.mex/` scaffold exists (`src/config.ts:79-81`) — which is the exact state `mex setup` runs in on a fresh project. It would have made setup unable to do its only job. Setup shares the resolution *rule* (`findGitRoot`) instead of the whole function. |
+| Making setup throw when no git root is found, mirroring `findConfig:75-77` | `mex setup` in a directory that is not yet a repo is a legitimate first move — `git init` afterwards is common. Throwing would regress a working path to satisfy a symmetry nobody asked for. Kept the cwd degrade, documented at the call site. |
+| Keeping the extracted `findProjectRoot()` wrapper in setup | One call site, one-expression body — a pure rename that hides nothing and freezes a shape. Inlined; the durable contract is `findGitRoot` in `config.ts`, where the walk actually lives. |
 
 ---
 
@@ -155,6 +214,8 @@ $ printf '7\n' | node dist/cli.js setup
 | `src/setup/index.ts` | `ompArtifactPaths` exported (fleet contract). |
 | `templates/omp/AGENTS.md` | New. The anchor bridge. |
 | `templates/.tool-configs/README.md` | omp row added to the tool → file table. |
+| `src/config.ts:103` | `findProjectRoot` → exported `findGitRoot`, the one root walk both setup and `findConfig` use. |
+| `src/setup/index.ts:315-320` | Duplicate resolver deleted; resolves inline via `findGitRoot`, degrading to cwd. |
 
 ## Tests added or changed
 

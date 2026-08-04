@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { findConfig, saveAiTools } from "../src/config.js";
+import { findConfig, saveAiTools, findGitRoot } from "../src/config.js";
 import { AI_TOOLS } from "../src/types.js";
 import { ompArtifactPaths } from "../src/setup/index.js";
 import { checkOmpArtifacts } from "../src/drift/checkers/omp-artifacts.js";
@@ -59,6 +59,25 @@ describe("omp tool target", () => {
     ]) {
       expect(dir.startsWith(".omp/")).toBe(true);
     }
+  });
+
+  // Regression: setup carried a duplicate, argument-less root resolver that walked
+  // up from `process.cwd()` and fell back to it. Found by the graph lane while
+  // fixing #3 (graph commands failing from a subdirectory) — the same blind spot.
+  // Setup now resolves via `findGitRoot`, the rule `findConfig` uses (src/config.ts:65),
+  // so both agree from anywhere in the tree.
+  it("resolves the project root from a subdirectory, not the cwd, so setup scaffolds the repo root", () => {
+    mkdirSync(join(tmpDir, ".git"));
+    const nested = join(tmpDir, "deep", "nested");
+    mkdirSync(nested, { recursive: true });
+
+    expect(findGitRoot(nested)).toBe(tmpDir);
+    // Same answer from the root itself — resolution is position-independent.
+    expect(findGitRoot(tmpDir)).toBe(tmpDir);
+  });
+
+  it("degrades to null rather than throwing when no git root exists, so setup can still scaffold a fresh directory", () => {
+    expect(findGitRoot(tmpDir)).toBeNull();
   });
 });
 

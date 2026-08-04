@@ -62,7 +62,7 @@ export function findConfig(startDir?: string): MexConfig {
   }
 
   // Try git root first, fall back to cwd if no git repo
-  const gitRoot = findProjectRoot(dir);
+  const gitRoot = findGitRoot(dir);
   const projectRoot = gitRoot ?? dir;
 
   const mexDir = resolve(projectRoot, ".mex");
@@ -90,7 +90,17 @@ export function findConfig(startDir?: string): MexConfig {
   return { projectRoot, scaffoldRoot, aiTools, stalenessThresholds, watch, heartbeat, identity };
 }
 
-function findProjectRoot(dir: string): string | null {
+/**
+ * Walk up from `dir` to the nearest ancestor containing `.git`, or `null` when
+ * there is none. `existsSync` is true for a `.git` **file** as well as a
+ * directory, which is what makes a git worktree its own project root.
+ *
+ * Exported so `mex setup` resolves its root by the same rule as every other
+ * command instead of keeping a second, subtly different walk. Setup cannot use
+ * {@link findConfig} itself — that requires the `.mex/` scaffold setup is about
+ * to create.
+ */
+export function findGitRoot(dir: string): string | null {
   let current = resolve(dir);
   while (true) {
     if (existsSync(resolve(current, ".git"))) {
