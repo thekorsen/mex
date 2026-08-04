@@ -1,6 +1,7 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { globSync } from "glob";
 import { afterEach, describe, expect, it } from "vitest";
 import { checkToolConfigSync } from "../src/drift/checkers/tool-config-sync.js";
 import { extractFrontmatter, findMexAnchors } from "../src/markdown.js";
@@ -59,5 +60,83 @@ describe("shipped code-graph agent guidance", () => {
       writeFileSync(destination, content);
     }
     expect(checkToolConfigSync(root)).toEqual([]);
+  });
+});
+
+describe("shipped oh-my-pi artifacts", () => {
+  const ompRoot = "templates/omp";
+  const rules = ["mex-router.md", "mex-graph.md", "mex-grow.md"];
+
+  it("bridges to the real anchor by import instead of embedding a sixth copy", () => {
+    const anchor = readFileSync(join(ompRoot, "AGENTS.md"), "utf-8");
+    expect(
+      anchor.split("\n").map((line) => line.trim()),
+      "the import must stand alone on its own line to resolve — it is relative to <root>/.omp/, and a token buried in prose or an HTML comment is inert",
+    ).toContain("@../.mex/AGENTS.md");
+    const embeddedBody = readFileSync("templates/.tool-configs/CLAUDE.md", "utf-8");
+    expect(embeddedBody).toContain("mex impact <symbol|file>");
+    expect(
+      anchor,
+      "the omp anchor must reference .mex/AGENTS.md, not inline the embedded guidance — otherwise it becomes a sixth copy to keep byte-identical",
+    ).not.toContain("mex impact <symbol|file>");
+    expect(extractFrontmatter(anchor), "omp context files take no frontmatter").toBeNull();
+  });
+
+  it("ships only rulebook-eligible rules", () => {
+    for (const name of rules) {
+      const frontmatter = extractFrontmatter(readFileSync(join(ompRoot, "rules", name), "utf-8"));
+      expect(frontmatter?.description, `${name} needs a description or omp drops it from the rulebook`).toBeTypeOf("string");
+      expect((frontmatter?.description ?? "").trim().length, `${name} description must not be blank`).toBeGreaterThan(0);
+      expect(
+        Object.keys(frontmatter ?? {}),
+        `${name} must not set alwaysApply: combined with description it moves the rule into the always-apply bucket and silently excludes it from the rulebook — the exact opposite of the intent`,
+      ).not.toContain("alwaysApply");
+    }
+  });
+
+  it("ships the wiki skill where the native provider discovers it", () => {
+    const skill = join(ompRoot, "skills/mex-wiki/SKILL.md");
+    expect(existsSync(skill), "SKILL.md must sit one level under the skills root — deeper nesting is not discovered").toBe(true);
+    const description = extractFrontmatter(readFileSync(skill, "utf-8"))?.description;
+    expect(description, "a skill without a description is silently invisible to the native provider").toBeTypeOf("string");
+    expect((description ?? "").trim().length).toBeGreaterThan(0);
+  });
+
+  it("gives every shipped command a description", () => {
+    const commands = globSync("*.md", { cwd: join(ompRoot, "commands"), nodir: true });
+    expect(commands.length).toBeGreaterThan(0);
+    for (const name of commands) {
+      const description = extractFrontmatter(readFileSync(join(ompRoot, "commands", name), "utf-8"))?.description;
+      expect(description, `commands/${name} needs a description to be listed`).toBeTypeOf("string");
+      expect((description ?? "").trim().length, `commands/${name} description must not be blank`).toBeGreaterThan(0);
+    }
+  });
+
+  it("mex- prefixes every artifact name so first-wins dedup cannot collide with the user's own", () => {
+    const named: string[] = [];
+    for (const kind of ["rules", "commands"]) {
+      const files = globSync("**/*", { cwd: join(ompRoot, kind), nodir: true });
+      expect(files.length, `${kind} must ship at least one artifact`).toBeGreaterThan(0);
+      named.push(...files.map((file) => `${kind}/${file}`));
+    }
+    const skills = readdirSync(join(ompRoot, "skills"), { withFileTypes: true }).filter((entry) => entry.isDirectory());
+    expect(skills.length, "skills must ship at least one artifact").toBeGreaterThan(0);
+    named.push(...skills.map((entry) => `skills/${entry.name}`));
+    for (const path of named) {
+      expect(
+        basename(path),
+        `${path} must be mex- prefixed: omp dedups rules, skills, and commands first-wins by bare name, so an unprefixed name would shadow or be shadowed by a user's own artifact`,
+      ).toMatch(/^mex-/);
+    }
+  });
+
+  it("keeps the force-stuck rules file inside its per-turn budget", () => {
+    const lines = readFileSync(join(ompRoot, "RULES.md"), "utf-8")
+      .split("\n")
+      .filter((line) => line.trim().length > 0);
+    expect(
+      lines.length,
+      "RULES.md is force-stuck and re-attached near every turn, so it is charged against every single turn's context — keep it to a handful of directives",
+    ).toBeLessThanOrEqual(20);
   });
 });

@@ -2,7 +2,7 @@
 
 // ── AI Tool ──
 
-export type AiTool = "claude" | "cursor" | "windsurf" | "copilot" | "opencode" | "codex";
+export type AiTool = "claude" | "cursor" | "windsurf" | "copilot" | "opencode" | "codex" | "omp";
 
 export interface AiToolMeta {
   name: string;
@@ -18,6 +18,7 @@ export const AI_TOOLS: Record<AiTool, AiToolMeta> = {
   copilot:  { name: "Copilot",     cli: null,       promptFlag: [] },
   opencode: { name: "OpenCode",    cli: "opencode", promptFlag: ["run"] },
   codex:    { name: "Codex",       cli: "codex",    promptFlag: [] },
+  omp:      { name: "oh-my-pi",    cli: "omp",      promptFlag: ["-p"] },
 };
 
 // ── Config ──
@@ -126,6 +127,10 @@ export type IssueCode =
   | "TOOL_CONFIG_DRIFT"
   | "TODO_FIXME"
   | "BROKEN_LINK"
+  // ── omp artifact integrity (emitted by src/drift/checkers/omp-artifacts.ts) ──
+  | "OMP_ANCHOR_BROKEN" //   an `@` import in .omp/AGENTS.md does not resolve (error)
+  | "OMP_RULE_DRIFT" //      a generated .omp/rules/ projection no longer matches its source (warning)
+  | "OMP_RULE_ORPHAN" //     a generated rule's source pattern is gone (warning)
   // ── Code-graph grounding (checker #12; emitted by src/drift/checkers/grounding.ts) ──
   // Added in Phase 0 so the grounding-checker contract typechecks and Track B
   // never has to reopen this shared union. See src/graph/grounding.ts.

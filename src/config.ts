@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname, isAbsolute, basename } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { MexConfig, AiTool, StalenessThresholds, WatchConfig, HeartbeatConfig, ScaffoldIdentity, CheckoutIdentity } from "./types.js";
+import { AI_TOOLS } from "./types.js";
 import { DEFAULT_STALENESS_THRESHOLDS } from "./drift/checkers/staleness.js";
 
 /**
@@ -62,7 +63,7 @@ export function findConfig(startDir?: string): MexConfig {
   }
 
   // Try git root first, fall back to cwd if no git repo
-  const gitRoot = findProjectRoot(dir);
+  const gitRoot = findGitRoot(dir);
   const projectRoot = gitRoot ?? dir;
 
   const mexDir = resolve(projectRoot, ".mex");
@@ -90,7 +91,17 @@ export function findConfig(startDir?: string): MexConfig {
   return { projectRoot, scaffoldRoot, aiTools, stalenessThresholds, watch, heartbeat, identity };
 }
 
-function findProjectRoot(dir: string): string | null {
+/**
+ * Walk up from `dir` to the nearest ancestor containing `.git`, or `null` when
+ * there is none. `existsSync` is true for a `.git` **file** as well as a
+ * directory, which is what makes a git worktree its own project root.
+ *
+ * Exported so `mex setup` resolves its root by the same rule as every other
+ * command instead of keeping a second, subtly different walk. Setup cannot use
+ * {@link findConfig} itself — that requires the `.mex/` scaffold setup is about
+ * to create.
+ */
+export function findGitRoot(dir: string): string | null {
   let current = resolve(dir);
   while (true) {
     if (existsSync(resolve(current, ".git"))) {
@@ -118,12 +129,12 @@ interface MexPersistedConfig {
   [key: string]: unknown;
 }
 
-const VALID_AI_TOOLS = new Set<string>(["claude", "cursor", "windsurf", "copilot", "opencode", "codex"]);
-
 function loadAiTools(raw: MexPersistedConfig | null): AiTool[] {
   const arr = raw?.aiTools;
   if (!Array.isArray(arr)) return [];
-  return arr.filter((v): v is AiTool => typeof v === "string" && VALID_AI_TOOLS.has(v));
+  // Validated against AI_TOOLS itself, so adding a tool to the union cannot
+  // silently fail to persist — an unlisted tool is dropped on every reload.
+  return arr.filter((v): v is AiTool => typeof v === "string" && v in AI_TOOLS);
 }
 
 /**
