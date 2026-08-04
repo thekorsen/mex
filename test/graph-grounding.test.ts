@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -125,8 +125,13 @@ function graph(nodes: GraphNode[]): GraphEngine {
   };
 }
 
+type ReconcileResolution =
+  | { kind: "MOVED"; nodeId: string }
+  | { kind: "AMBIGUOUS"; candidate: string }
+  | { kind: "GONE" };
+
 describe("grounding checker", () => {
-  it("is clean for an unchanged Tier-1 hit and warns when its body hash moves", () => {
+  it("is clean for an unchanged DB baseline hit and warns when its body hash moves", () => {
     const db = database();
     const store = new FingerprintStore(db);
     const baseline = fingerprint(64);
@@ -142,6 +147,35 @@ describe("grounding checker", () => {
     db.close();
   });
 
+  it("prefers sidecar-like baselines for body drift and deduplicates repeated current-node drift", () => {
+    const root = mkdtempSync(join(tmpdir(), "mex-anchor-check-"));
+    const mexRoot = join(root, ".mex");
+    const file = join(mexRoot, "context.md");
+    const baseline = fingerprint(64);
+    const fm = { grounds_to: [{ node: "current", fingerprint: serializeFingerprint(fingerprint(12)) }] };
+    const reconciler = {
+      reconcile: () => ({ kind: "GONE" as const }),
+      getGroundedSource: () => ({
+        scaffoldFile: ".mex/context.md",
+        nodeId: "current",
+        source: "old",
+        bodyHash: "db-hash",
+        fingerprint: serializeFingerprint(fingerprint(24)),
+      }),
+      getGroundingBaseline: () => ({ bodyHash: "sidecar-hash", fingerprint: serializeFingerprint(baseline) }),
+    };
+    try {
+      mkdirSync(mexRoot, { recursive: true });
+      writeFileSync(file, "[`symbol()`](mex://current)\n");
+      expect(createGroundingChecker(graph([node("current", "sidecar-hash")]), reconciler)(fm, file, "context.md", root, mexRoot)).toEqual([]);
+      expect(createGroundingChecker(graph([node("current", "changed-hash")]), reconciler)(fm, file, "context.md", root, mexRoot)).toMatchObject([
+        { code: "GROUNDING_DRIFT", severity: "warning", message: "Grounded node body changed: current" },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("reports GONE and AMBIGUOUS, and silently rebinds MOVED", () => {
     const baseline = fingerprint(64);
     const grounding = { node: "missing", fingerprint: serializeFingerprint(baseline) };
@@ -154,20 +188,73 @@ describe("grounding checker", () => {
     expect(grounding.node).toBe("new-id");
   });
 
+  it("aggregates missing baselines once per distinct current node across frontmatter and inline anchors", () => {
+    const root = mkdtempSync(join(tmpdir(), "mex-anchor-check-"));
+    const mexRoot = join(root, ".mex");
+    const file = join(mexRoot, "context.md");
+    const current = node("function:missing", "hash");
+    const other = node("function:other", "hash-2");
+    const fm = {
+      grounds_to: [
+        { node: "function:missing", fingerprint: serializeFingerprint(fingerprint(64)) },
+        { node: "function:other", fingerprint: serializeFingerprint(fingerprint(32)) },
+      ],
+    };
+    const reconciler = {
+      reconcile: () => ({ kind: "GONE" as const }),
+      getGroundingBaseline: (_scaffoldFile: string, nodeId: string) => (nodeId === "function:other"
+        ? { bodyHash: "hash-2", fingerprint: serializeFingerprint(fingerprint(32)) }
+        : null),
+    };
+    try {
+      mkdirSync(mexRoot, { recursive: true });
+      writeFileSync(file, "[`symbol()`](mex://function:missing)\n[`other()`](mex://function:other)\n");
+      const issues = createGroundingChecker(graph([current, other]), reconciler)(fm, file, "context.md", root, mexRoot);
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toMatchObject({ code: "GROUNDING_UNVERIFIABLE", severity: "warning" });
+      expect(issues[0]!.message).toContain("1 grounded node");
+      expect(issues[0]!.message).toContain(".mex/context.md");
+      expect(issues[0]!.message).toContain("run `mex graph ground` and commit `.mex/grounding.json`");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still emits aggregated unverifiable warnings when the scaffold file cannot be read", () => {
+    const fm = {
+      grounds_to: [{ node: "current", fingerprint: serializeFingerprint(fingerprint(64)) }],
+    };
+    const issues = createGroundingChecker(graph([node("current", "hash")]), { reconcile: () => ({ kind: "GONE" as const }) })(
+      fm,
+      "/repo/.mex/missing.md",
+      "context.md",
+      "/repo",
+      "/repo/.mex",
+    );
+    expect(issues).toMatchObject([
+      { code: "GROUNDING_UNVERIFIABLE", severity: "warning" },
+    ]);
+  });
+
   it("handles inline anchor hit, MOVED, GONE, and AMBIGUOUS as warning-only navigation drift", () => {
     const root = mkdtempSync(join(tmpdir(), "mex-anchor-check-"));
     const file = join(root, "context.md");
     const baseline = fingerprint(64);
-    const check = (nodes: GraphNode[], resolution: ReturnType<Reconciler["reconcile"]>) => {
+    const check = (
+      nodes: GraphNode[],
+      resolution: ReconcileResolution,
+      getGroundingBaseline?: (scaffoldFile: string, nodeId: string) => { bodyHash: string; fingerprint: string } | null,
+    ) => {
       writeFileSync(file, "[`symbol()`](mex://function:old)\n");
       const reconciler = {
         reconcile: () => resolution,
         getFingerprint: () => baseline,
+        getGroundingBaseline,
       };
       return createGroundingChecker(graph(nodes), reconciler)(null, file, "context.md", root, root);
     };
     try {
-      expect(check([node("function:old", "hash")], { kind: "GONE" })).toEqual([]);
+      expect(check([node("function:old", "hash")], { kind: "GONE" }, () => ({ bodyHash: "hash", fingerprint: serializeFingerprint(baseline) }))).toEqual([]);
       expect(check([], { kind: "MOVED", nodeId: "function:new" })).toMatchObject([{
         code: "GROUNDING_DRIFT", severity: "warning", message: expect.stringContaining("candidate: function:new"),
       }]);

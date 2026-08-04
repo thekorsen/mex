@@ -18,6 +18,14 @@ export interface GroundMigrationDeps {
   confirmAuthored?: () => Promise<boolean>;
 }
 
+function writeCaptureResult(write: (line: string) => void, captured: number): void {
+  if (captured > 0) {
+    write(`Captured ${captured} grounding baseline(s).`);
+    write("Wrote baselines to .mex/grounding.json; commit this file so other checkouts can verify grounding.");
+    return;
+  }
+  write("Warning: no grounding baselines were captured; verify the migration authored grounding.");
+}
 /** Prompt for agent-authored, prose-preserving migration of pre-0.7 scaffolds. */
 export function buildGroundMigrationPrompt(): string {
   return `You are retro-grounding an existing populated mex scaffold after an upgrade.
@@ -98,8 +106,7 @@ export async function runGraphGround(
     const result = await captureGroundingBaselines(config, {
       warn: (message) => write(`Warning: ${message}`),
     });
-    if (result.captured > 0) write(`Captured ${result.captured} grounding baseline(s).`);
-    else write("Warning: no grounding baselines were captured; verify the migration authored grounding.");
+    writeCaptureResult(write, result.captured);
     return "ran";
   }
 
@@ -110,8 +117,7 @@ export async function runGraphGround(
     const result = await captureGroundingBaselines(config, {
       warn: (message) => write(`Warning: ${message}`),
     });
-    if (result.captured > 0) write(`Captured ${result.captured} grounding baseline(s).`);
-    else write("Warning: no grounding baselines were captured; verify the migration authored grounding.");
+    writeCaptureResult(write, result.captured);
     return "ran";
   }
   return "prompted";
