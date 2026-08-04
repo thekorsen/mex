@@ -1,4 +1,10 @@
-import { daysSinceLastChange, commitsSinceLastChange } from "../../git.js";
+import {
+  daysSinceLastChange,
+  commitsSinceLastChange,
+  commitsTouchingPaths,
+  DEFAULT_COMMIT_COUNT_MODE,
+} from "../../git.js";
+import type { CommitCountMode, ComparisonBase } from "../../git.js";
 import type { DriftIssue, Severity, StalenessThresholds } from "../../types.js";
 
 /** Default thresholds. Overridden via MexConfig.stalenessThresholds / CLI flags. */
@@ -8,6 +14,12 @@ export const DEFAULT_STALENESS_THRESHOLDS: StalenessThresholds = {
   warnCommits: 50,
   errorCommits: 200,
 };
+
+/**
+ * Merge commits do not count as authored work, so merge-flow and rebase-flow
+ * teams get the same staleness signal from the same underlying work.
+ */
+export const STALENESS_COMMIT_COUNT_MODE: CommitCountMode = DEFAULT_COMMIT_COUNT_MODE;
 
 type StaleSignal = { severity: Severity; message: string };
 
@@ -51,6 +63,7 @@ function commitsSignal(
   return null;
 }
 
+
 const SEVERITY_RANK: Record<Severity, number> = {
   info: 0,
   warning: 1,
@@ -70,12 +83,25 @@ export async function checkStaleness(
   source: string,
   cwd: string,
   thresholds: StalenessThresholds = DEFAULT_STALENESS_THRESHOLDS,
-  opts: { lastUpdated?: string } = {}
+  opts: {
+    lastUpdated?: string;
+    mode?: CommitCountMode;
+    claimedPaths?: string[];
+    base?: ComparisonBase;
+  } = {}
 ): Promise<DriftIssue[]> {
   const { warnDays, errorDays, warnCommits, errorCommits } = thresholds;
+  const mode = opts.mode ?? STALENESS_COMMIT_COUNT_MODE;
 
   const days = await daysSinceLastChange(filePath, cwd);
-  const commits = await commitsSinceLastChange(filePath, cwd);
+  const commits = await commitsSinceLastChange(filePath, cwd, { mode });
+  const claimedCommits =
+    opts.claimedPaths &&
+    opts.claimedPaths.length > 0 &&
+    opts.base &&
+    opts.base.mergeBase !== null
+      ? await commitsTouchingPaths(opts.claimedPaths, opts.base.mergeBase, cwd, { mode })
+      : null;
 
   const signals: StaleSignal[] = [];
   if (days !== null) {
@@ -85,6 +111,16 @@ export async function checkStaleness(
   if (commits !== null) {
     const s = commitsSignal(commits, warnCommits, errorCommits);
     if (s) signals.push(s);
+  }
+  if (claimedCommits !== null && opts.base?.ref) {
+    const threshold = claimedCommits >= errorCommits ? errorCommits : warnCommits;
+    const s = commitsSignal(claimedCommits, warnCommits, errorCommits);
+    if (s) {
+      signals.push({
+        severity: s.severity,
+        message: `${opts.base.shallow ? "At least " : ""}${claimedCommits} commits touching claimed code since ${opts.base.ref} (threshold: ${threshold})`,
+      });
+    }
   }
   const fieldDays = daysSinceFrontmatterDate(opts.lastUpdated);
   if (fieldDays !== null) {
