@@ -195,6 +195,10 @@ describe.skipIf(!existsSync(SERVER))("mex-mcp over stdio", () => {
     expect(readFile?.inputSchema?.required, "mex_read_file requires file").toContain("file");
   });
 
+  // 20s: `mex_check` runs a full drift check over the scaffold (~2.5s standalone,
+  // slower under parallel suite load), so vitest's 5s default is too tight and
+  // made this the one flaky test in the suite. The child process has its own
+  // watchdog, so this bound only governs the assertion path.
   it("returns a drift report shape from mex_check", async () => {
     const call = {
       jsonrpc: "2.0",
@@ -214,5 +218,5 @@ describe.skipIf(!existsSync(SERVER))("mex-mcp over stdio", () => {
       issues: expect.any(Array),
       filesChecked: expect.any(Number),
     });
-  });
+  }, 20_000);
 });
