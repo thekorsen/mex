@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, realpathSync } from "node:fs";
 import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
-import { findConfig, saveAiTools, ensureScaffoldIdentity, getScaffoldIdentity } from "../src/config.js";
+import { findConfig, saveAiTools, ensureScaffoldIdentity, getScaffoldIdentity, createConfig, getCheckoutIdentity, resolveHooksDir } from "../src/config.js";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -204,14 +205,10 @@ describe("scaffold identity", () => {
 
     expect(id.scaffold_id).toMatch(UUID_V4);
     expect(id.scaffold_name).toBe(basename(tmpDir));
-    expect(id.origin).toBeNull();
-    expect(id.upstream).toBeNull();
 
     const raw = JSON.parse(readFileSync(join(mexPath, "config.json"), "utf-8"));
     expect(raw.scaffold_id).toBe(id.scaffold_id);
     expect(raw.scaffold_name).toBe(id.scaffold_name);
-    expect(raw.origin).toBeNull();
-    expect(raw.upstream).toBeNull();
   });
 
   it("is idempotent — never regenerates an existing id", () => {
@@ -259,15 +256,11 @@ describe("scaffold identity", () => {
     writeFileSync(join(mexPath, "config.json"), JSON.stringify({
       scaffold_id: "11111111-1111-4111-8111-111111111111",
       scaffold_name: "demo",
-      origin: null,
-      upstream: null,
     }));
     const config = findConfig(tmpDir);
     expect(config.identity).toEqual({
       scaffold_id: "11111111-1111-4111-8111-111111111111",
       scaffold_name: "demo",
-      origin: null,
-      upstream: null,
     });
   });
 
@@ -315,6 +308,112 @@ describe("scaffold identity", () => {
     const raw = JSON.parse(readFileSync(join(mexPath, "config.json"), "utf-8"));
     expect(raw.scaffold_id).toBe("keep-this-id");
     expect(raw.scaffold_name).toBe(basename(tmpDir));
+  });
+});
+
+describe("checkout identity and hook resolution", () => {
+  function git(cwd: string, ...args: string[]): string {
+    return execFileSync("git", args, {
+      cwd,
+      encoding: "utf-8",
+      env: { ...process.env, MEX_TELEMETRY: "0" },
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  }
+
+  function setupRepo(root: string): string {
+    git(root, "init");
+    git(root, "config", "user.email", "test@example.com");
+    git(root, "config", "user.name", "Test User");
+    writeFileSync(join(root, "README.md"), "hello\n");
+    git(root, "add", "README.md");
+    git(root, "commit", "-m", "init");
+    const scaffoldRoot = join(root, ".mex");
+    mkdirSync(scaffoldRoot);
+    writeFileSync(join(scaffoldRoot, "ROUTER.md"), "");
+    return scaffoldRoot;
+  }
+
+  it("resolveHooksDir returns the repo hooks dir from the root and a subdir", () => {
+    setupRepo(tmpDir);
+    const subdir = join(tmpDir, "nested");
+    mkdirSync(subdir);
+    expect(resolveHooksDir(tmpDir)).toBe(join(tmpDir, ".git", "hooks"));
+    expect(resolveHooksDir(subdir)).toBe(join(tmpDir, ".git", "hooks"));
+  });
+
+  it("resolveHooksDir returns null outside a git repo", () => {
+    expect(resolveHooksDir(tmpDir)).toBeNull();
+  });
+
+  it("resolveHooksDir honors core.hooksPath", () => {
+    setupRepo(tmpDir);
+    git(tmpDir, "config", "core.hooksPath", ".githooks");
+    expect(resolveHooksDir(tmpDir)).toBe(join(tmpDir, ".githooks"));
+  });
+
+  it("resolveHooksDir returns the common hooks dir inside a linked worktree", () => {
+    setupRepo(tmpDir);
+    const worktreeRoot = join(tmpDir, "..", `${basename(tmpDir)}-wt`);
+    git(tmpDir, "worktree", "add", worktreeRoot, "HEAD", "--detach");
+    try {
+      // realpathSync: on macOS the tmpdir is a symlink (/var -> /private/var) and
+      // git reports the resolved path, so compare canonical paths.
+      expect(resolveHooksDir(worktreeRoot)).toBe(realpathSync(join(tmpDir, ".git", "hooks")));
+    } finally {
+      git(tmpDir, "worktree", "remove", "--force", worktreeRoot);
+    }
+  });
+
+  it("getCheckoutIdentity separates worktrees while scaffold identity stays shared", () => {
+    const scaffoldRoot = setupRepo(tmpDir);
+    const worktreeRoot = join(tmpDir, "..", `${basename(tmpDir)}-wt`);
+    git(tmpDir, "worktree", "add", worktreeRoot, "HEAD", "--detach");
+    try {
+      // A real worktree inherits the COMMITTED config.json, so mint the shared
+      // identity in the main scaffold first, then copy it across the way git would.
+      // That shared scaffold_id surviving is the whole point of #18.
+      const mainConfig = createConfig({ projectRoot: tmpDir, scaffoldRoot });
+      const mainScaffold = getScaffoldIdentity(mainConfig);
+
+      const worktreeScaffoldRoot = join(worktreeRoot, ".mex");
+      mkdirSync(worktreeScaffoldRoot);
+      writeFileSync(join(worktreeScaffoldRoot, "ROUTER.md"), "");
+      writeFileSync(
+        join(worktreeScaffoldRoot, "config.json"),
+        readFileSync(join(scaffoldRoot, "config.json"), "utf-8"),
+      );
+      const worktreeConfig = createConfig({ projectRoot: worktreeRoot, scaffoldRoot: worktreeScaffoldRoot });
+
+      const worktreeScaffold = getScaffoldIdentity(worktreeConfig);
+      const mainCheckout = getCheckoutIdentity(mainConfig);
+      const worktreeCheckout = getCheckoutIdentity(worktreeConfig);
+
+      expect(mainScaffold.scaffold_id).toBe(worktreeScaffold.scaffold_id);
+      expect(mainCheckout.checkout_id).not.toBe(worktreeCheckout.checkout_id);
+    } finally {
+      git(tmpDir, "worktree", "remove", "--force", worktreeRoot);
+    }
+  });
+
+  it("getCheckoutIdentity is stable, uses a 32-char hex id, and names the checkout dir", () => {
+    setupRepo(tmpDir);
+    const worktreeRoot = join(tmpDir, "..", "wt");
+    git(tmpDir, "worktree", "add", worktreeRoot, "HEAD", "--detach");
+    try {
+      const worktreeScaffoldRoot = join(worktreeRoot, ".mex");
+      mkdirSync(worktreeScaffoldRoot);
+      writeFileSync(join(worktreeScaffoldRoot, "ROUTER.md"), "");
+      const config = createConfig({ projectRoot: worktreeRoot, scaffoldRoot: worktreeScaffoldRoot });
+      const first = getCheckoutIdentity(config);
+      const second = getCheckoutIdentity(config);
+
+      expect(second).toBe(first);
+      expect(first.checkout_id).toMatch(/^[0-9a-f]{32}$/);
+      expect(first.checkout_name).toBe("wt");
+    } finally {
+      git(tmpDir, "worktree", "remove", "--force", worktreeRoot);
+    }
   });
 });
 
