@@ -19,9 +19,21 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
+      # Root tsconfig.json has `include: ["src"]`, so this typechecks the root
+      # package ONLY — it never sees packages/*. tsup strips types without
+      # checking them, so `npm run build` stays green on a type error and this
+      # is the only step that catches one.
       - run: npm run typecheck
       - run: npm run test
       - run: npm run build
+      # Every workspace, after the root build: mex-mcp imports `mex-agent`,
+      # which resolves to the root dist/index.d.ts, so its typecheck is
+      # meaningless (TS7016, implicit any) until dist/ exists. Deliberately NOT
+      # `--if-present`: that exits 0 when a package has no typecheck script,
+      # which is exactly how packages/mex-mcp went untypechecked in the first
+      # place. Bare `--workspaces` fails loudly on a missing script, so a new
+      # package cannot silently opt out of type safety.
+      - run: npm run typecheck --workspaces
       - name: Smoke test packed graph CLI
         if: matrix.node-version == 22
         shell: bash

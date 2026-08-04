@@ -1,7 +1,7 @@
 {
   "name": "mex-mcp",
   "version": "0.1.0",
-  "description": "MCP server for mex-agent — exposes check/log/timeline/heartbeat/read-file/graph-scope/graph-get/graph-query/impact as native MCP tools",
+  "description": "MCP server for mex-agent \u2014 exposes check/log/timeline/heartbeat/read-file/graph-scope/graph-get/graph-query/impact as native MCP tools",
   "type": "module",
   "exports": {
     ".": {
@@ -15,7 +15,8 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
