@@ -13,6 +13,7 @@ Most embed the same content — a pointer to `.mex/ROUTER.md`. OpenCode uses a J
 | GitHub Copilot | `copilot-instructions.md` → copy to `.github/` in project root |
 | OpenCode | `opencode.json` → copy to `.opencode/` in project root |
 | Codex (OpenAI) | Copy `CLAUDE.md` as `AGENTS.md` to project root |
+| oh-my-pi (omp) | `mex setup` writes `.omp/` — anchor bridge, rulebook, skill, commands (see below) |
 | Any other tool | Point agent to `.mex/AGENTS.md` |
 
 ## Setup
@@ -37,6 +38,17 @@ mkdir -p .opencode && cp .tool-configs/opencode.json ./.opencode/opencode.json
 
 # Codex (OpenAI)
 cp .tool-configs/CLAUDE.md ./AGENTS.md
+
+# oh-my-pi (omp) — installed by `mex setup`, choice 7
+# omp reads .claude/CLAUDE.md, NOT root CLAUDE.md, so it gets its own native target:
+#   .omp/AGENTS.md              one-line `@../.mex/AGENTS.md` import (references, never copies)
+#   .omp/RULES.md               sticky non-negotiables
+#   .omp/rules/mex-*.md         routing table, graph discipline, GROW, one rule per pattern
+#   .omp/skills/mex-wiki/       retrieval playbook, fetched on demand
+#   .omp/commands/mex-*.md      /mex-check, /mex-sync, /mex-graph-scope
+# Every name is `mex-` prefixed: omp dedups first-wins by bare name, so an
+# unprefixed artifact would shadow or be shadowed by the user's own.
+# See docs/omp-integration/omp-surface-mapping.md
 ```
 
 ## If your tool is not listed

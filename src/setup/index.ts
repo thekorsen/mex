@@ -15,6 +15,7 @@ import {
 import { saveAiTools, ensureScaffoldIdentity } from "../config.js";
 import { isCliAvailable } from "../cli-tools.js";
 import { captureGroundingBaselines } from "../graph/runtime.js";
+import { extractFrontmatter } from "../markdown.js";
 import type { AiTool } from "../types.js";
 
 // ── Constants ──
@@ -56,7 +57,39 @@ const TOOL_CONFIGS: Record<string, { src: string; dest: string }> = {
   "4": { src: ".tool-configs/copilot-instructions.md", dest: ".github/copilot-instructions.md" },
   "5": { src: ".tool-configs/opencode.json", dest: ".opencode/opencode.json" },
   "6": { src: ".tool-configs/CLAUDE.md", dest: "AGENTS.md" },  // Codex reads AGENTS.md at root
+  "7": { src: "omp/AGENTS.md", dest: ".omp/AGENTS.md" },       // oh-my-pi: native anchor bridge
 };
+
+/**
+ * Where `mex setup` installs oh-my-pi artifacts, relative to the project root.
+ *
+ * omp discovers these natively at priority 100 and dedups **first-wins by bare
+ * name**, so every generated name is `mex-`-prefixed and can never shadow a
+ * rule, skill, or command the user wrote themselves.
+ *
+ * `anchor` is a thin bridge holding a single `@../.mex/AGENTS.md` import rather
+ * than a copy of the anchor text — `.mex/AGENTS.md` stays the one source of
+ * truth. See `docs/omp-integration/notes/1-omp-anchor-shape.md`.
+ */
+export const ompArtifactPaths = {
+  anchor: ".omp/AGENTS.md",
+  stickyRules: ".omp/RULES.md",
+  rulesDir: ".omp/rules",
+  skillsDir: ".omp/skills",
+  commandsDir: ".omp/commands",
+} as const;
+
+/** Static omp artifacts, copied verbatim from `templates/omp/`. */
+const OMP_STATIC_ARTIFACTS = [
+  "RULES.md",
+  "rules/mex-router.md",
+  "rules/mex-graph.md",
+  "rules/mex-grow.md",
+  "skills/mex-wiki/SKILL.md",
+  "commands/mex-check.md",
+  "commands/mex-sync.md",
+  "commands/mex-graph-scope.md",
+];
 
 // ── Helpers ──
 
@@ -77,6 +110,170 @@ function findProjectRoot(): string {
 
 function isTemplateContent(content: string): boolean {
   return content.includes("[Project Name]") || content.includes("[YYYY-MM-DD]");
+}
+
+/**
+ * Install the oh-my-pi rulebook, sticky rules, skill, and slash commands.
+ *
+ * Called only when the user selects the omp target. Existing files are never
+ * overwritten, matching the anchor behavior at {@link selectToolConfig}, so a
+ * user who has customised a generated rule keeps their version.
+ *
+ * Per-pattern rules are a **static projection**: the body holds pointers into
+ * `.mex/`, and the only derived field is the pattern's `description`. That one
+ * projection is what `OMP_RULE_DRIFT` verifies. See
+ * `docs/omp-integration/notes/13-router-to-omp-rulebook.md`.
+ */
+function writeOmpArtifacts(projectRoot: string, dryRun: boolean): void {
+  const copyArtifact = (rel: string, dest: string) => {
+    const src = resolve(TEMPLATES_DIR, "omp", rel);
+    if (!existsSync(src)) return;
+    const target = resolve(projectRoot, dest);
+
+    if (dryRun) {
+      ok(`(dry run) Would copy ${dest}`);
+      return;
+    }
+    if (existsSync(target)) {
+      warn(`${dest} already exists — skipped (delete it first to replace)`);
+      return;
+    }
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(src, target);
+    ok(`Copied ${dest}`);
+  };
+
+  for (const rel of OMP_STATIC_ARTIFACTS) {
+    copyArtifact(rel, `.omp/${rel}`);
+  }
+
+  for (const { slug, description } of readPatternDescriptions(projectRoot)) {
+    const dest = `${ompArtifactPaths.rulesDir}/mex-pattern-${slug}.md`;
+    const target = resolve(projectRoot, dest);
+
+    if (dryRun) {
+      ok(`(dry run) Would generate ${dest}`);
+      continue;
+    }
+    if (existsSync(target)) {
+      warn(`${dest} already exists — skipped (delete it first to regenerate)`);
+      continue;
+    }
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, buildPatternRule(slug, description));
+    ok(`Generated ${dest}`);
+  }
+}
+
+/**
+ * Read `name`/`description` from each `.mex/patterns/<slug>.md`, skipping the
+ * authoring spec and the index, which are not patterns. A pattern without a
+ * usable `description` is skipped rather than projected with a placeholder: omp
+ * requires a `description` for rulebook inclusion, so a generated rule without
+ * a real one would be invisible anyway.
+ */
+function readPatternDescriptions(projectRoot: string): Array<{ slug: string; description: string }> {
+  const patternsDir = resolve(projectRoot, ".mex", "patterns");
+  if (!existsSync(patternsDir)) return [];
+
+  const projected: Array<{ slug: string; description: string }> = [];
+  for (const file of globSync("*.md", { cwd: patternsDir })) {
+    const slug = file.replace(/\.md$/, "");
+    if (slug === "README" || slug === "INDEX") continue;
+    try {
+      const description = extractFrontmatter(readFileSync(resolve(patternsDir, file), "utf-8"))?.description;
+      if (typeof description === "string" && description.trim()) {
+        projected.push({ slug, description: description.trim() });
+      }
+    } catch {
+      // Unreadable pattern — skip rather than fail the whole setup.
+    }
+  }
+  return projected;
+}
+
+/**
+ * A per-pattern rulebook rule. Carries `description` and no `alwaysApply`:
+ * setting both would move the rule into the always-apply bucket and silently
+ * exclude it from the rulebook (`omp://rulebook-matching-pipeline.md:198-202`).
+ * The rule `name` is the filename, so no frontmatter `name` is emitted.
+ */
+function buildPatternRule(slug: string, description: string): string {
+  return `---
+description: ${JSON.stringify(description)}
+---
+
+<!-- mex-generated -->
+
+# Pattern: ${slug}
+
+Read \`.mex/patterns/${slug}.md\` and follow its Steps before writing code.
+
+If you are about to deviate from this pattern, say so and why first. If you learn a
+gotcha the pattern does not cover, update the pattern as part of the GROW step.
+
+<!-- Projected from \`.mex/patterns/${slug}.md\` by \`mex setup\`. The body is a pointer,
+     so only the description above can go stale; \`mex check\` reports that as
+     OMP_RULE_DRIFT, and a deleted source pattern as OMP_RULE_ORPHAN. -->
+`;
+}
+
+const GITIGNORE_MARKER = "# mex — generated artifacts";
+
+/**
+ * Ignore the generated code graph so consumers do not commit a binary SQLite
+ * database, plus its WAL/SHM sidecars (WAL mode is on — `src/graph/database.ts:31`).
+ *
+ * Appends a marked block, mirroring how {@link installHook} appends to an
+ * existing git hook (`src/watch.ts:83-99`): existing content is preserved
+ * byte-for-byte above the block, and the marker makes the append idempotent.
+ *
+ * `.mex/events/decisions.jsonl` is deliberately **not** ignored — it is
+ * append-only, line-oriented, merges tolerably, and is meant to be shared. The
+ * emitted comment says so, so nobody "cleans it up" later.
+ */
+function ensureGitignoreRule(projectRoot: string, dryRun: boolean): void {
+  const gitignorePath = resolve(projectRoot, ".gitignore");
+  const block = `${GITIGNORE_MARKER}
+# The code graph is a generated SQLite database (plus WAL/SHM sidecars) — never commit it.
+# Rebuild it with \`mex graph\`.
+.mex/graph.db*
+# NOT ignored, on purpose: .mex/events/decisions.jsonl is append-only, merges
+# tolerably, and is meant to be committed and shared. Do not add it here.
+`;
+
+  if (existsSync(gitignorePath)) {
+    let existing: string;
+    try {
+      existing = readFileSync(gitignorePath, "utf-8");
+    } catch {
+      warn("Could not read .gitignore — add `.mex/graph.db*` manually");
+      return;
+    }
+
+    // Already handled, either by us or by a hand-written rule.
+    if (existing.includes(GITIGNORE_MARKER) || /^\s*\.mex\/graph\.db\*?\s*$/m.test(existing)) {
+      info("Skipped .gitignore (.mex/graph.db* already ignored)");
+      return;
+    }
+
+    if (dryRun) {
+      ok("(dry run) Would append .mex/graph.db* to .gitignore");
+      return;
+    }
+
+    writeFileSync(gitignorePath, `${existing.trimEnd()}\n\n${block}`);
+    ok("Added .mex/graph.db* to existing .gitignore");
+    return;
+  }
+
+  if (dryRun) {
+    ok("(dry run) Would create .gitignore with .mex/graph.db*");
+    return;
+  }
+
+  writeFileSync(gitignorePath, block);
+  ok("Created .gitignore ignoring .mex/graph.db*");
 }
 
 function banner() {
@@ -197,6 +394,8 @@ export async function runSetup(opts: { dryRun?: boolean; mode?: string } = {}): 
       ok(`Copied .mex/${file}`);
     }
   }
+
+  ensureGitignoreRule(projectRoot, dryRun);
   console.log();
 
   // ── Step 3: Tool config selection ──
@@ -381,6 +580,7 @@ const TOOL_CHOICE_MAP: Record<string, AiTool> = {
   "4": "copilot",
   "5": "opencode",
   "6": "codex",
+  "7": "omp",
 };
 
 async function selectToolConfig(
@@ -396,23 +596,17 @@ async function selectToolConfig(
   console.log("  4) GitHub Copilot");
   console.log("  5) OpenCode");
   console.log("  6) Codex (OpenAI)");
-  console.log("  7) Multiple (select next)");
-  console.log("  8) None / skip");
+  console.log("  7) oh-my-pi (omp)");
+  console.log("  8) Multiple (select next)");
+  console.log("  9) None / skip");
   console.log();
 
-  const choice = (await rl.question("Choice [1-8] (default: 1): ")).trim() || "1";
+  const choice = (await rl.question("Choice [1-9] (default: 1): ")).trim() || "1";
 
   let selectedClaude = false;
   const selectedTools: AiTool[] = [];
 
-  const copyConfig = (key: string) => {
-    const config = TOOL_CONFIGS[key];
-    if (!config) return;
-
-    if (key === "1") selectedClaude = true;
-    const tool = TOOL_CHOICE_MAP[key];
-    if (tool) selectedTools.push(tool);
-
+  const copyAnchor = (config: { src: string; dest: string }) => {
     const src = resolve(TEMPLATES_DIR, config.src);
     const dest = resolve(projectRoot, config.dest);
 
@@ -437,6 +631,22 @@ async function selectToolConfig(
     ok(`Copied ${config.dest}`);
   };
 
+  const copyConfig = (key: string) => {
+    const config = TOOL_CONFIGS[key];
+    if (!config) return;
+
+    if (key === "1") selectedClaude = true;
+    const tool = TOOL_CHOICE_MAP[key];
+    if (tool) selectedTools.push(tool);
+
+    copyAnchor(config);
+
+    // omp gets the rulebook, sticky rules, skill, and commands alongside its
+    // anchor. Runs even when the anchor was skipped, so a re-run still installs
+    // artifacts added by a later mex version.
+    if (tool === "omp") writeOmpArtifacts(projectRoot, dryRun);
+  };
+
   switch (choice) {
     case "1":
     case "2":
@@ -444,16 +654,17 @@ async function selectToolConfig(
     case "4":
     case "5":
     case "6":
+    case "7":
       copyConfig(choice);
       break;
-    case "7": {
+    case "8": {
       const multi = (await rl.question("Enter tool numbers separated by spaces (e.g. 1 2 5): ")).trim();
       for (const c of multi.split(/\s+/)) {
         copyConfig(c);
       }
       break;
     }
-    case "8":
+    case "9":
       info("Skipped tool config — AGENTS.md in .mex/ works with any tool that can read files");
       break;
     default:
