@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeAll, beforeEach } from "vitest";
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -71,14 +72,53 @@ describe("mex sync headless contract", () => {
   const PROMPT_MARKER = "(default: 1)";
 
   /** `input` makes stdin a pipe at EOF — never a TTY, exactly like CI. */
-  function runSyncCli(args: string[]) {
+  function runSyncCli(args: string[], cwd: string = repoRoot) {
     return spawnSync(process.execPath, [cliPath, "sync", ...args], {
-      cwd: repoRoot,
+      cwd,
       encoding: "utf8",
       env,
       input: "",
       timeout: 60_000,
     });
+  }
+
+  const fixtures: string[] = [];
+
+  afterEach(() => {
+    for (const root of fixtures.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  /**
+   * A throwaway repo carrying exactly one seeded warning-level issue: a
+   * package.json script no scaffold file mentions, which `checkScriptCoverage`
+   * reports as `UNDOCUMENTED_SCRIPT` at warning severity
+   * (src/drift/checkers/script-coverage.ts:66-74).
+   *
+   * These tests used to run against the live repo and relied on it carrying
+   * warning-level drift as an ambient precondition. That inverts the incentive:
+   * the moment the wiki got healthy (100/100) the assertion became
+   * unsatisfiable, because sync correctly reports "No drift detected" and never
+   * builds a brief. The contract under test is headless sync, not the repo's
+   * score, so the drift is seeded here instead.
+   *
+   * `UNDOCUMENTED_SCRIPT` is chosen deliberately: it is warning severity (so
+   * `--warnings` is what pulls it into scope, which is the branch being tested)
+   * and it is computed from file contents alone, so it needs no commit history.
+   */
+  function seedWarningDriftRepo(): string {
+    const root = mkdtempSync(join(tmpdir(), "mex-sync-headless-"));
+    fixtures.push(root);
+    // `findConfig` treats a directory containing `.git` as the project root
+    // (src/config.ts:95), so the fixture must be its own repo or resolution
+    // walks up into the real one.
+    execSync("git init -q", { cwd: root, stdio: "pipe" });
+    mkdirSync(join(root, ".mex"), { recursive: true });
+    writeFileSync(
+      join(root, "package.json"),
+      `${JSON.stringify({ name: "mex-sync-fixture", version: "1.0.0", scripts: { "seeded-undocumented-script": "echo hi" } }, null, 2)}\n`,
+    );
+    writeFileSync(join(root, ".mex", "ROUTER.md"), "# Router\n\nNo scripts are documented here.\n");
+    return root;
   }
 
   it("reaches a deterministic exit without prompting when stdin is not a TTY", () => {
@@ -92,9 +132,10 @@ describe("mex sync headless contract", () => {
   }, 90_000);
 
   it("prints the repair brief instead of launching an agent when drift is in scope", () => {
-    // `--warnings` pulls the repo's warning-only drift into scope so sync gets
-    // past the "only warnings remain" early return and reaches the prompt guard.
-    const result = runSyncCli(["--non-interactive", "--warnings"]);
+    // `--warnings` pulls the seeded warning-only issue into scope, so sync gets
+    // past the "only warnings remain" early return (src/sync/index.ts:169-176)
+    // and reaches the non-interactive guard.
+    const result = runSyncCli(["--non-interactive", "--warnings"], seedWarningDriftRepo());
 
     expect(result.signal).toBe(null);
     expect(result.status).toBe(0);
@@ -105,7 +146,7 @@ describe("mex sync headless contract", () => {
   }, 90_000);
 
   it("auto-detects the non-TTY stdin without the explicit flag", () => {
-    const result = runSyncCli(["--warnings"]);
+    const result = runSyncCli(["--warnings"], seedWarningDriftRepo());
 
     expect(result.signal).toBe(null);
     expect(result.status).toBe(0);
