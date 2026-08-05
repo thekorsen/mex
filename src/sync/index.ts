@@ -6,6 +6,7 @@ import { AI_TOOLS } from "../types.js";
 import { runDriftCheck } from "../drift/index.js";
 import { isCliAvailable } from "../cli-tools.js";
 import { buildSyncBrief, buildCombinedBrief } from "./brief-builder.js";
+import { deliverBrief } from "./brief-delivery.js";
 import { findScaffoldFiles } from "../drift/index.js";
 import { captureGroundingBaselines, loadGroundingRuntime, persistMovedGroundings } from "../graph/runtime.js";
 
@@ -41,19 +42,41 @@ export function runToolInteractive(tool: AiTool, brief: string, cwd: string): bo
   const meta = AI_TOOLS[tool];
   if (!meta.cli) return false;
 
-  const args = [...meta.promptFlag, brief];
-  // cross-spawn resolves Windows `.cmd`/`.bat` wrappers (npm installs `claude`
-  // as `claude.cmd`) and escapes args correctly — plain spawnSync throws ENOENT
-  // on Windows, and `shell: true` mangles the multi-line prompt (issue #85).
-  const result = crossSpawn.sync(meta.cli, args, {
-    cwd,
-    stdio: "inherit",
-    timeout: INTERACTIVE_AI_TIMEOUT_MS,
-  });
-  // A spawn failure (ENOENT, etc.) sets `error` and leaves `status` null — don't
-  // mistake that for success, or launch problems get silently swallowed.
-  if (result.error) return false;
-  return result.status === 0;
+  const delivery = deliverBrief(brief);
+  const isOmp = meta === AI_TOOLS.omp;
+  // OMP expands @<path> into the initial message, avoiding a read tool call. Its
+  // inner deadline is one minute shorter than mex's outer process timeout so the
+  // harness can stop cleanly before cross-spawn kills it. CLI and prompt flags
+  // still come exclusively from AI_TOOLS.omp.
+  const promptArg = isOmp && delivery.spillPath ? `@${delivery.spillPath}` : delivery.prompt;
+  const ompTimeoutMinutes = INTERACTIVE_AI_TIMEOUT_MS / 60_000 - 1;
+  const args = [
+    ...meta.promptFlag,
+    ...(isOmp ? [`--max-time=${ompTimeoutMinutes}m`] : []),
+    promptArg,
+  ];
+  try {
+    // cross-spawn resolves Windows `.cmd`/`.bat` wrappers (npm installs `claude`
+    // as `claude.cmd`) and escapes args correctly — plain spawnSync throws ENOENT
+    // on Windows, and `shell: true` mangles the multi-line prompt (issue #85).
+    const result = crossSpawn.sync(meta.cli, args, {
+      cwd,
+      stdio: "inherit",
+      timeout: INTERACTIVE_AI_TIMEOUT_MS,
+    });
+    // A spawn failure (ENOENT, etc.) sets `error` and leaves `status` null — don't
+    // mistake that for success, and report it once because pre-fix E2BIG surfaced
+    // only as a generic session failure, making an argv-sized brief look like the agent broke.
+    if (result.error) {
+      console.log(chalk.red("  ✗ " + meta.name + " could not run: " + result.error.message));
+      return false;
+    }
+    return result.status === 0;
+  } finally {
+    // cross-spawn.sync blocks until the child exits, so the spill file necessarily
+    // outlives the agent process and can be removed immediately after spawn returns.
+    delivery.cleanup();
+  }
 }
 
 /** Pick which AI tool to use for interactive sync */
@@ -244,7 +267,11 @@ export async function runSync(
         case "1":
           if (!syncTool) {
             console.log(chalk.yellow("No supported AI CLI detected. Falling back to prompts mode."));
-            console.log(chalk.dim("Supported CLIs: claude, opencode, codex"));
+            // Derive the visible CLI list from AI_TOOLS so a new tool cannot be missing from it.
+            console.log(chalk.dim("Supported CLIs: " + (Object.keys(AI_TOOLS) as AiTool[])
+              .filter((tool) => AI_TOOLS[tool].cli)
+              .map((tool) => AI_TOOLS[tool].cli)
+              .join(", ")));
             console.log();
             mode = "prompts";
           } else {
