@@ -1,0 +1,24 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "mex-omp-local",
+  "owner": {
+    "name": "mex"
+  },
+  "metadata": {
+    "description": "Single-plugin catalog for the mex-omp extension. The catalog ships inside the plugin directory it advertises, so the plugin source is the marketplace root itself — see README.md, section Distribution.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "mex-omp",
+      "description": "oh-my-pi extension module for mex-agent: routed per-turn wiki injection, in-process code-graph retrieval tools, /mex-* commands, and supervised drift watching.",
+      "version": "0.1.0",
+      "category": "development",
+      "keywords": ["mex", "code-graph", "retrieval", "wiki", "context"],
+      "license": "MIT",
+      "homepage": "https://mexmemory.com",
+      "repository": "https://github.com/mex-memory/mex",
+      "source": "./."
+    }
+  ]
+}

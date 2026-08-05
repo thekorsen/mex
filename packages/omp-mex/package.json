@@ -1,0 +1,26 @@
+{
+  "name": "mex-omp",
+  "version": "0.1.0",
+  "description": "oh-my-pi (omp) extension module for mex-agent — routed per-turn wiki injection, in-process graph retrieval tools, /mex-* commands, and supervised drift watching",
+  "type": "module",
+  "omp": {
+    "extensions": ["./src/index.ts"]
+  },
+  "files": [
+    "src",
+    "skills",
+    "commands",
+    "rules",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "mex-agent": "file:../.."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -188,7 +188,9 @@ describe("git upstream resolution and counting", () => {
     await expect(commitsSinceLastChange("new-name.md", root)).resolves.toBe(2);
   });
 
-  it("diffs against the resolved base instead of a hardcoded HEAD~5 window", async () => {
+  // Spawns several real git repos; ~6.5s locally, and CI has fewer cores than a
+  // dev box, so the 5s default is marginal by construction rather than flaky code.
+  it("diffs against the resolved base instead of a hardcoded HEAD~5 window", { timeout: 15000 }, async () => {
     const source = createRepo("mex-git-diff-src-");
     initRepo(source);
     write(source, "knowledge.md", "base\n");
