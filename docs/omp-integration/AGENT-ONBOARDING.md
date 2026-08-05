@@ -170,10 +170,19 @@ Every line below was run in this working tree. Reproduce before doubting.
 - ~~**[INFERENCE]** Whether `simple-git`'s default `log()` includes merge commits.~~ **RESOLVED by issue #9 — it DOES** (24/24 merge shas present; `all.length` == `git rev-list --count HEAD`). Merge handling is now explicit and mutation-tested in both directions.
 - ~~**[INFERENCE]** Whether the dangling `.mex/sync.sh` references are pre-npm residue or an intentional legacy path.~~ **RESOLVED by issue #19 — pre-npm residue.** `247ff33` moved the root scaffold into `.mex/` while `setup.sh` was still a real sibling; `09e12ef` then copied `.mex/SETUP.md` verbatim into `templates/` **and** set `package.json#files` with no `*.sh`, in the same commit. `git log -S 'sync.sh' -- templates/` returns exactly `09e12ef`.
 - ~~`origin` / `upstream` in `ScaffoldIdentity` are loaded and persisted but no writer sets them.~~ **RESOLVED by issue #18 — they were dead code and have been removed.** Confirmed by `git log -S`, greps across `src/ packages/ test/ templates/`, and a zero-hit grep on `COMPATIBILITY.md`.
-- **[INFERENCE]** Whether gitignoring `graph.db` is upstream policy or this repo's choice. `COMPATIBILITY.md:156-159` calls it "generated … internal mex data", consistent with ignoring, but no team policy is stated (issue #5, **open** — the baselines lane must settle this).
-- **Doc conflict in the harness:** `omp://marketplace.md` states marketplace installs load `omp.extensions` via symlink + `omp-plugins.lock.json`; other omp docs are less explicit. Verify empirically before depending on marketplace distribution (issue #16, **open**).
+- ~~**[INFERENCE]** Whether gitignoring `graph.db` is upstream policy or this repo's choice.~~ **RESOLVED by issue #5 — upstream policy**, introduced in upstream commit `9952db4`. `graph.db` stays ignored; the shareable baseline ships as a text-diffable `.mex/grounding.json` instead.
+- **Doc conflict in the harness, still OPEN:** `omp://marketplace.md` states marketplace installs load `omp.extensions` via symlink + `omp-plugins.lock.json`; other omp docs are less explicit. Issue #16 deliberately did **not** guess — `packages/omp-mex` does not depend on that path, and the other three install paths load `omp.extensions` unambiguously. Verify before relying on marketplace distribution.
 - `evaluate/` and `visualize.sh` (55 KB, embedded Python viewer on port 4444) were not read.
 - Whether `mex init`'s five sub-scanners behave as the orchestrator implies — only `src/scanner/index.ts` was read.
+
+#### Harness-level constraints — verified by execution (treat as §4.1)
+
+These bind **any** future in-process work under omp, not just the tickets that found them.
+
+- **Bun has no `node:sqlite`, so mex's code graph is unreadable in-process inside an omp session.** `bun -e 'await import("node:sqlite")'` → `ResolveMessage: No such built-in module`; the same under `node` (v26) → `DatabaseSync,StatementSync,Session,constants,backup`; `runGraphScope` inside a live `omp -p` session → `{"type":"error","code":"GRAPH_UNAVAILABLE"}` naming that module. In one session `spawnSync(process.execPath, …)` (Bun) fails while `spawnSync("node", …)` returns real JSONL — **`node` is on `PATH` in-session; `process.execPath` is the Bun binary.** Cost of the subprocess route: `node dist/cli.js graph scope "…" --max-nodes 5` = **340 ms** (0.35/0.34/0.34/0.33/0.34) vs **97 ms** in-process under node vs ~7 s for a full graph build. Bun *does* ship `bun:sqlite`, but with a different API (`Database`, not `DatabaseSync`) — a port was **rejected** by issue #16 rather than fork mex's storage layer for one harness.
+- **Any reference to the `"mex-agent"` specifier from a statically-imported extension module breaks extension LOADING — including `import type`, which Bun resolves rather than erases.** It surfaces as an unrelated error deep in a transitive CJS dep of `simple-git` (`Export named 'FOLDER' not found in … @kwsites/file-exists`), so the message does not point at the cause. Working form: `import(import.meta.resolve("mex-agent"))` from inside a handler. `import.meta.resolve` **must** be called as a member expression — a lifted local throws `must be bound to an import.meta object`.
+- **Extension-package sibling discovery is partial:** `skills/` **is** discovered; `commands/*.md` is **not**; a bundled `mcp.json`/`.mcp.json` is **not** (zero MCP tools). Register commands in code. Also: `context` handlers may be async and **are** awaited, and extension-registered tools remain callable under `--no-tools`.
+- **`npm run build` does not typecheck** — see the wave-1 list below; this bit the fleet once and is why CI now runs `typecheck --if-present` across every workspace.
 
 #### Newly verified by execution during wave 1 (treat as §4.1)
 
@@ -237,7 +246,7 @@ The canary-token technique is the reliable way to test context injection: put a 
 
 ## 6. Issue map
 
-**16 of 19 closed by the wave-1 fleet** (merged to `main` as `0379c24`). Three remain open, all wave 2.
+**All 19 closed.** Wave 1 merged as `0379c24` (16 issues), wave 2 as `4eaf79b` (#5, #14) and `7d6056a` (#16).
 
 | # | Title | Milestone | State |
 |---|---|---|---|
@@ -245,7 +254,7 @@ The canary-token technique is the reliable way to test context injection: put a 
 | 2 | Add `.omp` as a tool target in `mex setup` | Tier 1 | **closed** — `AI_TOOLS.omp`; also killed a duplicate whitelist in `src/config.ts` |
 | 3 | Graph commands fail from any subdirectory | Correctness | **closed** — `resolveGraphRoot`; also fixed a dead `--root` flag |
 | 4 | `mex watch` ENOTDIR in a worktree | Correctness | **closed** — `git rev-parse --git-path hooks`; shared hook is correct |
-| 5 | Fresh clone has anchors but no baselines | Multi-dev | **OPEN** — wave 2, lane `baselines`. The silent failure. |
+| 5 | Fresh clone has anchors but no baselines | Multi-dev | **closed** — committed `.mex/grounding.json`; `GROUNDING_UNVERIFIABLE` replaces silence |
 | 6 | mtime change detection vs existing `content_hash` | Multi-dev | **closed** — 13,996 ms → 65 ms; `graph.db` now portable |
 | 7 | No CI path; sync needs a TTY | Multi-dev | **closed** — drift gate, `counts` + `contractVersion`, exit 2 |
 | 8 | No reconciliation model for concurrent edits | Multi-dev | **closed** — design proposal in `docs/omp-integration/design/` |
@@ -254,22 +263,34 @@ The canary-token technique is the reliable way to test context injection: put a 
 | 11 | `mex-mcp` process-global state leaks | Correctness | **closed** — keyed per root; `isDevRepo` threaded |
 | 12 | mex never writes a `.gitignore` rule | Correctness | **closed** — idempotent marker-append |
 | 13 | Map `ROUTER.md` onto omp's rulebook | Tier 1 | **closed** — static projection, pointer-only bodies |
-| 14 | Teach `mex sync` to drive omp | Tier 1 | **OPEN** — wave 2, lane `syncomp`. Risk: brief size vs `ARG_MAX`. |
+| 14 | Teach `mex sync` to drive omp | Tier 1 | **closed** — briefs spill to a temp file via omp's `@file`; live repair 97 → 100 |
 | 15 | Ship a mex skill + slash commands | Tier 1 | **closed** — verified live in omp 17.2.4 |
-| 16 | The omp extension module | Tier 2 | **OPEN** — wave 2, lane `ext`. Tier 1 prerequisites now landed. |
+| 16 | The omp extension module | Tier 2 | **closed** — `packages/omp-mex`; retrieval via `node` subprocess (Bun has no `node:sqlite`) |
 | 17 | Document + test Tier 0 | Tier 0 | **closed** — and the ticket's own `@` form was wrong |
 | 18 | Two checkouts share one `scaffold_id` | Correctness | **closed** — per-checkout identity; dead fields removed |
 | 19 | Shipped `SETUP.md` references non-existent scripts | Correctness | **closed** — pre-npm residue, now test-defended |
 
-### Wave 2 — what is left and what it depends on
+### What the waves actually cost, and what a future session should know
 
-- **#5 (`baselines`)** is the one that matters most for a real team: grounded-symbol body drift is
-  undetectable on any clone but the authoring one, and it fails by reporting *clean*. #6 landed the
-  prerequisite — `graph.db` is now content-portable across checkouts.
-- **#14 (`syncomp`)** consumes `AI_TOOLS.omp` from #2 and must honor the non-TTY promise from #7.
-- **#16 (`ext`)** consumes the four MCP tools from #10 and the rulebook projection from #13.
+Final state of `main`: typecheck clean across three workspaces (root, `mex-mcp`, `omp-mex`),
+**551/551 tests**, `mex check` **100/100** (the baseline when this work started was 94/100).
 
-The two bugs #16 was originally scoped around (#3, #6) are **already fixed** — do not re-fix them.
+Three defects were caught at *integration*, not by any lane's own gates — worth knowing because the
+same traps are still live:
+
+1. **A non-compiling file passed every gate.** `src/watch.ts` lost an import; `tsup` strips types
+   without checking them, so `npm run build` stayed green and `vitest` never loaded the broken path.
+   Only `tsc --noEmit` caught it. CI now runs typecheck across all workspaces.
+2. **Two tests were coupled to ambient repo drift.** They asserted `mex sync --warnings` emits a
+   repair brief, which held only while the repo carried warnings — so "the wiki is accurate" and
+   "the tests pass" were mutually exclusive by construction. Fixed by seeding a fixture.
+3. **A marginal timeout became a flake under load.** `test/git-upstream.test.ts` spawns real git
+   repos and takes ~6.5 s against vitest's 5 s default; it only started failing when another lane's
+   tests added parallel pressure. CI has fewer cores than a dev box.
+
+Two follow-ups were deliberately **not** done, and neither is hidden behind a "v1" label:
+`mex setup` does not project `.omp/mcp.json` (so the MCP channel `omp-mex` recommends must be
+configured by hand), and the Bun/`node:sqlite` constraint arguably belongs in `COMPATIBILITY.md`.
 
 ---
 
