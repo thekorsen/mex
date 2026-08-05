@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildExistingNoBriefPrompt, buildExistingWithBriefPrompt } from "../src/setup/prompts.js";
 import { createGraphEngine } from "../src/graph/engine-impl.js";
 import { runGraphScope } from "../src/graph/cli-agent.js";
+import { openGraphDatabase } from "../src/graph/db/database.js";
 import { deserializeFingerprint } from "../src/graph/fingerprint.js";
 import { extractGroundings, findMexAnchors, writeGroundings } from "../src/markdown.js";
 import { checkBrokenLinks } from "../src/drift/checkers/broken-link.js";
@@ -88,12 +89,21 @@ export function calculateCheckoutTotal(items: number[], member: boolean): number
     const config = { projectRoot: root, scaffoldRoot: join(root, ".mex"), aiTools: [] };
     const captured = await captureGroundingBaselines(config);
     expect(captured).toEqual({ captured: 2, skipped: 0 });
+    const sidecarPath = join(root, ".mex", "grounding.json");
+    const firstSidecar = readFileSync(sidecarPath, "utf-8");
+    expect(firstSidecar).toContain('"bodyHash"');
+    expect(firstSidecar).toContain('"fingerprint"');
+    expect(firstSidecar).not.toContain("subtotal >= 100 ? 0 : 12");
     const runtime = await loadGroundingRuntime(config);
     expect(runtime!.fingerprints.getGroundedSource(".mex/patterns/calculate-checkout.md", groundings[0].node))
       .not.toBeNull();
     expect(runtime!.fingerprints.getGroundedSource(".mex/patterns/navigation.md", groundings[0].node))
       .not.toBeNull();
     runtime!.close();
+
+    const db = openGraphDatabase(join(root, ".mex", "graph.db"));
+    db.prepare("DELETE FROM _mex_grounded_source").run();
+    db.close();
 
     writeFileSync(join(sourceDir, "checkout.ts"), readFileSync(join(sourceDir, "checkout.ts"), "utf-8")
       .replace("subtotal >= 100 ? 0 : 12", "subtotal >= 125 ? 0 : 15"));
@@ -106,8 +116,14 @@ export function calculateCheckoutTotal(items: number[], member: boolean): number
     // Same shared post-authoring routine used by sync: refresh, then check clean.
     expect(await captureGroundingBaselines(config, { updateFingerprints: true }))
       .toEqual({ captured: 2, skipped: 0 });
+    const secondSidecar = readFileSync(sidecarPath, "utf-8");
+    expect(secondSidecar).toContain('"bodyHash"');
     const clean = await runDriftCheck(config);
     expect(clean.issues.filter((issue) => issue.code.startsWith("GROUNDING_"))).toEqual([]);
+
+    expect(await captureGroundingBaselines(config, { updateFingerprints: true }))
+      .toEqual({ captured: 2, skipped: 0 });
+    expect(readFileSync(sidecarPath, "utf-8")).toBe(secondSidecar);
   });
 
   it("skips and warns when authored grounding no longer resolves", async () => {

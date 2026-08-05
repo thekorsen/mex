@@ -4,6 +4,12 @@ import { globSync } from "glob";
 import type { MexConfig, Grounding } from "../types.js";
 import { extractGroundings, findMexAnchors, rewriteMexAnchor, writeGroundings } from "../markdown.js";
 import { createGroundingChecker, type GroundingChecker, type GroundedSource } from "./grounding.js";
+import {
+  groundingBaselineKey,
+  readGroundingSidecar,
+  writeGroundingSidecar,
+  type GroundingBaseline,
+} from "./grounding-sidecar.js";
 import { createGraphEngine, sha256 } from "./engine-impl.js";
 import type { GraphEngine } from "./engine.js";
 import { SUPPORTED_SOURCE_GLOB } from "./extraction/grammars.js";
@@ -21,6 +27,7 @@ export interface GroundingRuntime {
   reconciler: MinHashReconciler;
   checker: GroundingChecker;
   fingerprints: FingerprintStore;
+  sidecarBaselines: Map<string, GroundingBaseline>;
   /** Pre-sync fingerprints for inline ids that may disappear during a rename. */
   anchorFingerprints: ReadonlyMap<string, Fingerprint>;
   close(): void;
@@ -45,6 +52,7 @@ export async function loadGroundingRuntime(config: MexConfig): Promise<Grounding
   try {
     db = openGraphDatabase(dbPath);
     const fingerprints = new FingerprintStore(db);
+    const sidecarBaselines = readGroundingSidecar(config.scaffoldRoot);
     const anchorFingerprints = snapshotAnchorFingerprints(config, fingerprints);
     const changed = findChangedSourceFiles(config.projectRoot, db);
     if (changed.length > 0) await graph.sync(changed);
@@ -53,12 +61,19 @@ export async function loadGroundingRuntime(config: MexConfig): Promise<Grounding
       reconcile: (nodeId, baseline) => reconciler.reconcile(nodeId, baseline),
       getFingerprint: (nodeId) => anchorFingerprints.get(nodeId) ?? reconciler.getFingerprint(nodeId),
       getGroundedSource: (file, nodeId) => reconciler.getGroundedSource(file, nodeId),
+      getGroundingBaseline: (file, nodeId) => {
+        const grounded = reconciler.getGroundedSource(file, nodeId);
+        if (grounded) return { bodyHash: grounded.bodyHash, fingerprint: grounded.fingerprint };
+        const sidecar = sidecarBaselines.get(groundingBaselineKey(file, nodeId));
+        return sidecar ? { bodyHash: sidecar.bodyHash, fingerprint: sidecar.fingerprint } : null;
+      },
     };
     return {
       graph,
       reconciler,
       checker: createGroundingChecker(graph, checkerReconciler),
       fingerprints,
+      sidecarBaselines,
       anchorFingerprints,
       close: () => { graph.close(); db?.close(); db = null; },
     };
@@ -151,6 +166,7 @@ export function persistMovedGroundings(
   runtime: GroundingRuntime,
 ): number {
   let moved = 0;
+  let sidecarDirty = false;
   for (const filePath of scaffoldFiles) {
     const content = readFileSync(filePath, "utf-8");
     const groundings = extractGroundings(content);
@@ -159,8 +175,10 @@ export function persistMovedGroundings(
     for (const grounding of groundings) {
       if (runtime.graph.getNode(grounding.node)) continue;
       const baselineSource = runtime.reconciler.getGroundedSource(scaffoldFile, grounding.node);
+      const baselineRecord = runtime.sidecarBaselines.get(groundingBaselineKey(scaffoldFile, grounding.node));
       const baseline = deserializeFingerprint(grounding.fingerprint)
-        ?? (baselineSource ? deserializeFingerprint(baselineSource.fingerprint) : null);
+        ?? (baselineSource ? deserializeFingerprint(baselineSource.fingerprint) : null)
+        ?? (baselineRecord ? deserializeFingerprint(baselineRecord.fingerprint) : null);
       if (!baseline) continue;
       const resolution = runtime.reconciler.reconcile(grounding.node, baseline);
       if (resolution.kind !== "MOVED") continue;
@@ -168,8 +186,9 @@ export function persistMovedGroundings(
       grounding.node = resolution.nodeId;
       const fingerprint = runtime.reconciler.getFingerprint(resolution.nodeId);
       if (fingerprint) grounding.fingerprint = serializeFingerprint(fingerprint);
-      saveCurrentBaseline(config, scaffoldFile, grounding.node, grounding.fingerprint, runtime);
+      if (saveCurrentBaseline(config, scaffoldFile, grounding.node, grounding.fingerprint, runtime)) sidecarDirty = true;
       runtime.fingerprints.deleteGroundedSource(scaffoldFile, oldId);
+      runtime.sidecarBaselines.delete(groundingBaselineKey(scaffoldFile, oldId));
       dirty = true;
       moved += 1;
     }
@@ -178,22 +197,39 @@ export function persistMovedGroundings(
     const anchors = findMexAnchors(anchoredContent);
     for (const anchor of [...anchors].reverse()) {
       if (runtime.graph.getNode(anchor.nodeId)) continue;
-      const baselineSource = runtime.reconciler.getGroundedSource(scaffoldFile, anchor.nodeId);
-      const baseline = runtime.anchorFingerprints.get(anchor.nodeId)
-        ?? (baselineSource ? deserializeFingerprint(baselineSource.fingerprint) : null);
+      const oldId = anchor.nodeId;
+      const baselineSource = runtime.reconciler.getGroundedSource(scaffoldFile, oldId);
+      const baselineRecord = runtime.sidecarBaselines.get(groundingBaselineKey(scaffoldFile, oldId));
+      const baseline = runtime.anchorFingerprints.get(oldId)
+        ?? (baselineSource ? deserializeFingerprint(baselineSource.fingerprint) : null)
+        ?? (baselineRecord ? deserializeFingerprint(baselineRecord.fingerprint) : null);
       if (!baseline) continue;
-      const resolution = runtime.reconciler.reconcile(anchor.nodeId, baseline);
+      const resolution = runtime.reconciler.reconcile(oldId, baseline);
       if (resolution.kind !== "MOVED") continue;
       anchoredContent = rewriteMexAnchor(anchoredContent, anchor, resolution.nodeId);
+      const fingerprint = runtime.reconciler.getFingerprint(resolution.nodeId);
+      if (fingerprint) {
+        const sidecarKey = groundingBaselineKey(scaffoldFile, resolution.nodeId);
+        const previousBaseline = runtime.sidecarBaselines.get(sidecarKey);
+        if (saveCurrentBaseline(config, scaffoldFile, resolution.nodeId, serializeFingerprint(fingerprint), runtime)) {
+          if (!previousBaseline || previousBaseline.bodyHash !== runtime.graph.getNode(resolution.nodeId)?.bodyHash
+            || previousBaseline.fingerprint !== serializeFingerprint(fingerprint)) sidecarDirty = true;
+        }
+      }
+      runtime.fingerprints.deleteGroundedSource(scaffoldFile, oldId);
+      runtime.sidecarBaselines.delete(groundingBaselineKey(scaffoldFile, oldId));
+      sidecarDirty = true;
       moved += 1;
     }
     if (anchoredContent !== content) writeFileSync(filePath, anchoredContent, "utf-8");
   }
+  if (sidecarDirty) writeGroundingSidecar(config.scaffoldRoot, runtime.sidecarBaselines.values());
   return moved;
 }
 
 interface GroundingReconcilerCapabilities {
   getGroundedSource(scaffoldFile: string, nodeId: string): GroundedSource | null;
+  getGroundingBaseline?(scaffoldFile: string, nodeId: string): { bodyHash: string; fingerprint: string } | null;
   getFingerprint(nodeId: string): Fingerprint | null;
 }
 
@@ -225,6 +261,7 @@ export function refreshGroundingBaselines(
 ): GroundingBaselineCaptureResult {
   let captured = 0;
   let skipped = 0;
+  let sidecarDirty = false;
   for (const filePath of scaffoldFiles) {
     const content = readFileSync(filePath, "utf-8");
     const groundings = extractGroundings(content);
@@ -239,8 +276,9 @@ export function refreshGroundingBaselines(
     ]);
     for (const nodeId of nodeIds) {
       const grounding = groundingByNode.get(nodeId);
+      const node = runtime.graph.getNode(nodeId);
       const fingerprint = runtime.reconciler.getFingerprint(nodeId);
-      if (!fingerprint || !runtime.graph.getNode(nodeId)) {
+      if (!fingerprint || !node) {
         skipped += 1;
         options.warn?.(`Skipped grounding baseline for unavailable node ${nodeId} in ${scaffoldFile}.`);
         continue;
@@ -255,15 +293,21 @@ export function refreshGroundingBaselines(
         grounding.fingerprint = serialized;
         dirty = true;
       }
-      if (saveCurrentBaseline(config, scaffoldFile, nodeId, serialized, runtime)) {
-        captured += 1;
-      } else {
+      const sidecarKey = groundingBaselineKey(scaffoldFile, node.id);
+      const previousBaseline = runtime.sidecarBaselines.get(sidecarKey);
+      if (!saveCurrentBaseline(config, scaffoldFile, nodeId, serialized, runtime)) {
         skipped += 1;
         options.warn?.(`Skipped grounding baseline for non-body node ${nodeId} in ${scaffoldFile}.`);
+        continue;
+      }
+      captured += 1;
+      if (!previousBaseline || previousBaseline.bodyHash !== node.bodyHash || previousBaseline.fingerprint !== serialized) {
+        sidecarDirty = true;
       }
     }
     if (dirty) writeFileSync(filePath, writeGroundings(content, groundings), "utf-8");
   }
+  if (sidecarDirty) writeGroundingSidecar(config.scaffoldRoot, runtime.sidecarBaselines.values());
   return { captured, skipped };
 }
 
@@ -302,6 +346,12 @@ function saveCurrentBaseline(
     fingerprint,
   };
   runtime.fingerprints.saveGroundedSource(source);
+  runtime.sidecarBaselines.set(groundingBaselineKey(scaffoldFile, node.id), {
+    scaffoldFile,
+    nodeId: node.id,
+    bodyHash: source.bodyHash,
+    fingerprint: source.fingerprint,
+  });
   return true;
 }
 
