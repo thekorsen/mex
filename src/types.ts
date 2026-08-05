@@ -136,7 +136,11 @@ export type IssueCode =
   // never has to reopen this shared union. See src/graph/grounding.ts.
   | "GROUNDING_GONE" //      grounded node deleted / unrecoverable (error)
   | "GROUNDING_DRIFT" //     grounded node still exists but its body changed (warning)
-  | "GROUNDING_AMBIGUOUS"; // reconciler found an uncertain move candidate (warning)
+  | "GROUNDING_AMBIGUOUS" // reconciler found an uncertain move candidate (warning)
+  // Added by issue #5: anchors are committed but baselines were not, so body-drift
+  // detection was silently dead on any checkout that had not run the grounding
+  // pass itself. Absence of a baseline is now reported rather than read as clean.
+  | "GROUNDING_UNVERIFIABLE"; // grounded node has no reachable baseline here (warning)
 
 export interface DriftIssue {
   code: IssueCode;
